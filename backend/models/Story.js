@@ -28,7 +28,8 @@ const storySchema = new mongoose.Schema({
   topic: {
     type: String,
     required: true,
-    enum: ['childhood', 'family', 'career', 'love', 'wisdom', 'travel']
+    // Updated enum to match the new "Story Modules" in the biographer AI
+    enum: ['childhood', 'school', 'career', 'family', 'wisdom', 'default']
   },
   interviewMode: {
     type: String,
@@ -47,6 +48,11 @@ const storySchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  // Added field to store the final generated blog post
+  summary: {
+    type: String,
+    default: ''
+  },
   audioUrl: {
     type: String
   },
@@ -56,12 +62,7 @@ const storySchema = new mongoose.Schema({
     default: 'processing'
   },
   conversationHistory: [conversationMessageSchema],
-  extractedEntities: {
-    names: [String],
-    locations: [String],
-    dates: [String],
-    organizations: [String]
-  },
+  // Removed obsolete 'extractedEntities' field
   createdAt: {
     type: Date,
     default: Date.now
