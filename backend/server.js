@@ -2,7 +2,7 @@ const express = require('express');
 const dotenv = require('dotenv');
 const path = require('path');
 const connectDB = require('./database');
-const corsMiddleware = require('./middleware/cors');
+const cors = require('cors'); // Import the cors package
 
 // Load env vars
 dotenv.config();
@@ -14,7 +14,7 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // Middleware
-app.use(corsMiddleware);
+app.use(cors()); // Use the cors middleware
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
@@ -84,3 +84,4 @@ app.listen(PORT, () => {
   console.log(`🌐 Environment: ${process.env.NODE_ENV}`);
   console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
 });
+

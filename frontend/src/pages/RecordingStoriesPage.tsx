@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { BookOpen, Mic, User, Heart, Clock, CheckCircle2, ArrowRight, Play, Pause, RotateCcw, Save, Phone, MessageCircle, WifiOff } from 'lucide-react';
+import { BookOpen, Mic, User, ArrowRight, AlertTriangle, Wifi, Save, CheckCircle2 } from 'lucide-react';
 
 // Types
 interface ConversationMessage {
@@ -9,23 +9,18 @@ interface ConversationMessage {
   isFallback?: boolean;
 }
 
-interface Story {
-  _id?: string;
-  storytellerName: string;
-  topic: string;
-  recordingDuration: number;
-  transcript: string;
-  audioUrl?: string;
-  createdAt?: Date;
-  status: 'processing' | 'completed' | 'failed';
-  conversationHistory: ConversationMessage[];
-}
-
 interface AIResponse {
   response: string;
   timestamp: string;
-  suggestedFollowUp?: string;
+  extractedData?: any;
   isFallback?: boolean;
+}
+
+interface DebugInfo {
+  error: string;
+  message: string;
+  isOnline: boolean;
+  timestamp: string;
 }
 
 // --- AI Character Component ---
@@ -57,7 +52,6 @@ const AiCharacter = ({ status }: { status: 'idle' | 'thinking' | 'speaking' }) =
   );
 };
 
-
 export default function RecordingStoriesPage() {
   const [step, setStep] = useState(1);
   const [isRecording, setIsRecording] = useState(false);
@@ -65,12 +59,18 @@ export default function RecordingStoriesPage() {
   const [selectedTopic, setSelectedTopic] = useState('');
   const [conversationHistory, setConversationHistory] = useState<ConversationMessage[]>([]);
   const [aiStatus, setAiStatus] = useState<'idle' | 'thinking' | 'speaking'>('idle');
-  const [interviewMode, setInterviewMode] = useState<'voice' | 'phone'>('voice');
-  const [phoneNumber, setPhoneNumber] = useState('');
-  const [callStatus, setCallStatus] = useState<'idle' | 'calling' | 'active' | 'completed' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState('');
+  const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
+  const [isBackendConnected, setIsBackendConnected] = useState(false);
+  const [isTestingConnection, setIsTestingConnection] = useState(false);
+  const [currentStoryId, setCurrentStoryId] = useState<string | null>(null);
+  const [recordingStartTime, setRecordingStartTime] = useState<number | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
 
-  const recognitionRef = useRef<any>(null); // For Speech Recognition
+  const recognitionRef = useRef<any>(null);
+  const retryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const MAX_RETRIES = 3;
 
   const topics = [
     { id: 'childhood', title: 'Childhood Memories', icon: '🎈' },
@@ -81,113 +81,259 @@ export default function RecordingStoriesPage() {
     { id: 'travel', title: 'Adventures & Travel', icon: '✈️' },
   ];
 
-  // --- Main Action Handler ---
+  // Test backend connection
+  const testBackendConnection = async () => {
+    setIsTestingConnection(true);
+    setErrorMessage('');
+    
+    try {
+      const response = await fetch('http://localhost:5000/api/health');
+      if (response.ok) {
+        const data = await response.json();
+        setIsBackendConnected(true);
+        console.log('✅ Backend connection successful:', data);
+      } else {
+        throw new Error(`Server responded with status: ${response.status}`);
+      }
+    } catch (error: any) {
+      setIsBackendConnected(false);
+      setErrorMessage('Cannot connect to backend server. Please make sure it is running on port 5000.');
+      console.error('❌ Backend connection failed:', error);
+    } finally {
+      setIsTestingConnection(false);
+    }
+  };
+
+  // Test AI service connection
+  const testAIConnection = async () => {
+    try {
+      const response = await fetch('http://localhost:5000/api/ai/health');
+      if (response.ok) {
+        console.log('✅ AI service is ready');
+        return true;
+      } else {
+        throw new Error('AI service not ready');
+      }
+    } catch (error) {
+      console.error('❌ AI service connection failed:', error);
+      return false;
+    }
+  };
+
+  // Start a new story session
+  const startStorySession = async () => {
+    try {
+      const response = await fetch('http://localhost:5000/api/ai/start-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          storytellerName,
+          topic: selectedTopic,
+          interviewMode: 'voice'
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to start story session');
+      }
+
+      const data = await response.json();
+      setCurrentStoryId(data.storyId);
+      setRecordingStartTime(Date.now());
+      
+      // Add greeting to conversation
+      const greeting: ConversationMessage = {
+        speaker: 'ai',
+        text: data.greeting,
+        timestamp: new Date()
+      };
+      setConversationHistory([greeting]);
+      
+      return data.greeting;
+    } catch (error: any) {
+      console.error('Error starting story session:', error);
+      throw error;
+    }
+  };
+
+  // End story session and save
+  const endStorySession = async () => {
+    if (!currentStoryId || !recordingStartTime) return;
+
+    setIsSaving(true);
+    try {
+      const recordingDuration = Math.floor((Date.now() - recordingStartTime) / 1000);
+      
+      const response = await fetch('http://localhost:5000/api/ai/end-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          storyId: currentStoryId,
+          recordingDuration
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to save story session');
+      }
+
+      const data = await response.json();
+      console.log('✅ Story saved successfully:', data);
+      
+      // Show success message
+      setErrorMessage('');
+      alert('Story saved successfully! You can view it in your stories list.');
+      
+      // Reset to start
+      setStep(1);
+      setStorytellerName('');
+      setSelectedTopic('');
+      setConversationHistory([]);
+      setCurrentStoryId(null);
+      setRecordingStartTime(null);
+    } catch (error: any) {
+      console.error('Error saving story:', error);
+      setErrorMessage('Failed to save story. Please try again.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   const handleStartInterview = async () => {
     setErrorMessage('');
+    setDebugInfo(null);
+    setRetryCount(0);
+    
+    // Test connection before starting
+    if (!isBackendConnected) {
+      await testBackendConnection();
+      if (!isBackendConnected) {
+        setErrorMessage('Please ensure the backend server is running on port 5000');
+        return;
+      }
+    }
+
     if (!storytellerName || !selectedTopic) {
       setErrorMessage("Please provide the storyteller's name and select a topic.");
       return;
     }
 
-    if (interviewMode === 'phone') {
-      if (!phoneNumber) {
-        setErrorMessage('Please enter a valid phone number for the interview.');
-        return;
-      }
-      await startPhoneInterview();
-    } else {
-      setStep(2);
-      // For voice interview, we'll start listening after the intro message
+    // Test AI connection
+    const aiReady = await testAIConnection();
+    if (!aiReady) {
+      setErrorMessage('AI service is not ready. Please check your API key and try again.');
+      return;
     }
+
+    setStep(2);
   };
 
-  // --- Phone Interview (VAPI) Logic ---
-  const startPhoneInterview = async () => {
-    setCallStatus('calling');
-    setStep(2);
+  const generateAIResponse = async (userInput: string, history: ConversationMessage[]): Promise<AIResponse> => {
+    setAiStatus('thinking');
+    
     try {
-      const response = await fetch('http://localhost:5000/api/vapi/start-call', {
+      const response = await fetch('http://localhost:5000/api/ai/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ storytellerName, topic: selectedTopic, phoneNumber }),
+        body: JSON.stringify({ 
+          message: userInput, 
+          topic: selectedTopic, 
+          storytellerName,
+          conversationHistory: history,
+          storyId: currentStoryId
+        }),
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to initiate the call.');
+        const errorText = await response.text();
+        throw new Error(`Server error: ${response.status} - ${errorText}`);
       }
-      setCallStatus('active');
+
+      return await response.json();
     } catch (error: any) {
-      setErrorMessage(error.message);
-      setCallStatus('error');
+      if (error.name === 'TypeError' && error.message.includes('Failed to fetch')) {
+        throw new Error('Cannot connect to AI service. Please check if the server is running.');
+      }
+      throw error;
     }
   };
 
-  // --- Voice Interview (Gemini) Logic ---
-
-  // Calls our new AI backend
-  const generateAIResponse = async (userInput: string, history: ConversationMessage[]): Promise<AIResponse> => {
-    setAiStatus('thinking');
-    const response = await fetch('http://localhost:5000/api/ai/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            message: userInput,
-            topic: selectedTopic,
-            storytellerName: storytellerName,
-            conversationHistory: history,
-        }),
-    });
-
-    if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || 'Failed to get AI response');
-    }
-
-    return response.json();
-  };
-
-  // Processes user speech and gets AI reply
   const processUserResponse = async (userInput: string) => {
-    const userMessage: ConversationMessage = { speaker: 'user', text: userInput, timestamp: new Date() };
+    setRetryCount(0);
+    const userMessage: ConversationMessage = { 
+      speaker: 'user', 
+      text: userInput, 
+      timestamp: new Date() 
+    };
     const newHistory = [...conversationHistory, userMessage];
     setConversationHistory(newHistory);
 
     try {
-        const aiData = await generateAIResponse(userInput, newHistory);
-        const aiMessage: ConversationMessage = { speaker: 'ai', text: aiData.response, timestamp: new Date(), isFallback: aiData.isFallback };
-        setConversationHistory(prev => [...prev, aiMessage]);
-        await speakText(aiData.response);
-    } catch (error) {
-        console.error("Error processing user response:", error);
-        const errorMessage: ConversationMessage = { speaker: 'ai', text: "I'm having trouble connecting. Let's try that again.", timestamp: new Date(), isFallback: true };
-        setConversationHistory(prev => [...prev, errorMessage]);
-        await speakText(errorMessage.text);
+      const aiData = await generateAIResponse(userInput, newHistory);
+      const aiMessage: ConversationMessage = { 
+        speaker: 'ai', 
+        text: aiData.response, 
+        timestamp: new Date(), 
+        isFallback: aiData.isFallback 
+      };
+      setConversationHistory(prev => [...prev, aiMessage]);
+      await speakText(aiData.response);
+    } catch (error: any) {
+      console.error("Error processing user response:", error);
+      
+      const errorText = error.message.includes('Cannot connect to AI service') 
+        ? "The AI service is not available. Please make sure the backend server is running on port 5000."
+        : "I'm having trouble connecting. Let's try that again.";
+      
+      const errorMsg: ConversationMessage = { 
+        speaker: 'ai', 
+        text: errorText, 
+        timestamp: new Date(), 
+        isFallback: true 
+      };
+      setConversationHistory(prev => [...prev, errorMsg]);
+      await speakText(errorMsg.text);
     } finally {
-        if (recognitionRef.current) recognitionRef.current.start(); // Start listening again
+      if (isRecording && !errorMessage && recognitionRef.current) {
+        try { 
+          recognitionRef.current.start(); 
+        } catch (e) { 
+          console.log("Recognition could not be started."); 
+        }
+      }
     }
   };
 
-  // Uses browser's built-in speech synthesis
   const speakText = (text: string): Promise<void> => {
     return new Promise((resolve) => {
-        setAiStatus('speaking');
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.onend = () => {
-            setAiStatus('idle');
-            resolve();
-        };
-        speechSynthesis.speak(utterance);
+      setAiStatus('speaking');
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 0.9;
+      utterance.pitch = 1;
+      utterance.volume = 0.8;
+      
+      utterance.onend = () => {
+        setAiStatus('idle');
+        resolve();
+      };
+      
+      utterance.onerror = (event) => {
+        console.error('Speech synthesis error:', event);
+        setAiStatus('idle');
+        resolve();
+      };
+      
+      speechSynthesis.speak(utterance);
     });
   };
 
-  // Sets up the browser's speech recognition
   const initializeSpeechRecognition = () => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      console.error("Speech Recognition not supported in this browser.");
+      setErrorMessage("Speech Recognition is not supported by your browser.");
       return;
     }
+    
     const recognition = new SpeechRecognition();
     recognition.continuous = false;
     recognition.interimResults = false;
@@ -199,80 +345,171 @@ export default function RecordingStoriesPage() {
       processUserResponse(spokenText);
     };
 
-    recognition.onerror = (event) => {
-        console.error("Speech recognition error", event.error);
-        if (event.error === 'no-speech') {
-            recognition.start(); // If no speech, just start listening again
+    recognition.onerror = (event: any) => {
+      console.error("Speech recognition error event:", event);
+      setIsRecording(false);
+      setAiStatus('idle');
+
+      if (event.error === 'network') {
+        if (retryCount < MAX_RETRIES) {
+          const newRetryCount = retryCount + 1;
+          setRetryCount(newRetryCount);
+          const delay = Math.pow(2, newRetryCount) * 1000;
+          setErrorMessage(`Connection lost. Retrying in ${delay / 1000}s...`);
+          retryTimeoutRef.current = setTimeout(() => {
+            retryVoiceInterview(true);
+          }, delay);
+        } else {
+          setErrorMessage("Connection to speech service failed.");
+          setDebugInfo({
+            error: event.error, 
+            message: event.message || 'No additional message provided.',
+            isOnline: navigator.onLine, 
+            timestamp: new Date().toLocaleTimeString()
+          });
         }
+      } else if (event.error === 'no-speech' && isRecording) {
+        try { recognition.start(); } catch (e) { console.log("Could not restart recognition."); }
+      } else if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        setErrorMessage("Microphone access was denied.");
+      } else {
+        setErrorMessage("Speech recognition error: " + event.error);
+      }
     };
     
     recognitionRef.current = recognition;
   };
 
-  // Effect to set up and start the voice interview
+  const retryVoiceInterview = (isAutoRetry = false) => {
+    if (!isAutoRetry) {
+      setRetryCount(0);
+    }
+    setErrorMessage('');
+    setDebugInfo(null);
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.start();
+        setIsRecording(true);
+      } catch(e) {
+        console.error("Failed to retry speech recognition:", e);
+        setErrorMessage("Could not restart interview. Please refresh.");
+      }
+    }
+  };
+
+  // Test connection on component mount
   useEffect(() => {
-    if (step === 2 && interviewMode === 'voice') {
+    testBackendConnection();
+  }, []);
+
+  useEffect(() => {
+    if (step === 2) {
       initializeSpeechRecognition();
-      const introMessage = `Hello ${storytellerName}. Thank you for sharing your memories about ${selectedTopic}. I'm ready to listen when you are.`;
-      const firstMessage: ConversationMessage = { speaker: 'ai', text: introMessage, timestamp: new Date() };
-      setConversationHistory([firstMessage]);
-      speakText(introMessage).then(() => {
-        if (recognitionRef.current) {
-          recognitionRef.current.start();
-          setIsRecording(true);
-        }
+      
+      // Start story session and store the ID
+      startStorySession().then((greeting) => {
+        speakText(greeting).then(() => {
+          if (recognitionRef.current) {
+            recognitionRef.current.start();
+            setIsRecording(true);
+          }
+        });
+      }).catch((error) => {
+        console.error('Failed to start story session:', error);
+        setErrorMessage('Failed to start interview session. Please try again.');
+        setStep(1); // Go back to setup
       });
     }
 
-    return () => { // Cleanup
-      if (recognitionRef.current) recognitionRef.current.stop();
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.abort();
+      }
+      if (retryTimeoutRef.current) {
+        clearTimeout(retryTimeoutRef.current);
+      }
       speechSynthesis.cancel();
+      setIsRecording(false);
     };
-  }, [step, interviewMode]);
-
-
-  // --- UI RENDER FUNCTIONS ---
+  }, [step]);
 
   const renderSetupStep = () => (
     <div className="container mx-auto px-6 py-12">
       <div className="max-w-3xl mx-auto text-center">
         <h1 className="text-4xl font-bold text-gray-800 mb-2">Begin a New Story</h1>
-        <p className="text-lg text-gray-600">Choose the interview method and provide some basic details to get started.</p>
+        <p className="text-lg text-gray-600">Provide some basic details to get started with the interview.</p>
       </div>
+      
       <div className="max-w-2xl mx-auto mt-10 p-8 bg-white rounded-xl shadow-lg border border-gray-200">
-        <div className="mb-6">
-          <label className="block text-sm font-semibold text-gray-700 mb-2">1. Choose Interview Method</label>
-          <div className="flex justify-center gap-4 bg-gray-100 p-2 rounded-lg">
-            <button onClick={() => setInterviewMode('voice')} className={`w-full flex items-center justify-center gap-2 px-4 py-2 rounded-md transition ${interviewMode === 'voice' ? 'bg-amber-600 text-white shadow' : 'text-gray-700 hover:bg-gray-200'}`}><MessageCircle className="w-5 h-5" /> Voice Interview</button>
-            <button onClick={() => setInterviewMode('phone')} className={`w-full flex items-center justify-center gap-2 px-4 py-2 rounded-md transition ${interviewMode === 'phone' ? 'bg-amber-600 text-white shadow' : 'text-gray-700 hover:bg-gray-200'}`}><Phone className="w-5 h-5" /> Phone Interview</button>
-          </div>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-          <div>
-            <label htmlFor="storytellerName" className="block text-sm font-semibold text-gray-700 mb-2">2. Storyteller's Name</label>
-            <input type="text" id="storytellerName" value={storytellerName} onChange={(e) => setStorytellerName(e.target.value)} placeholder="e.g., Jane Doe" className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
-          </div>
-          {interviewMode === 'phone' && (
+        {/* Connection Test */}
+        <div className="mb-6 p-4 bg-gray-50 rounded-lg">
+          <div className="flex items-center justify-between">
             <div>
-              <label htmlFor="phoneNumber" className="block text-sm font-semibold text-gray-700 mb-2">3. Phone Number</label>
-              <input type="tel" id="phoneNumber" value={phoneNumber} onChange={(e) => setPhoneNumber(e.target.value)} placeholder="+1 (555) 123-4567" className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
+              <p className="font-semibold text-gray-700 flex items-center gap-2">
+                <Wifi size={16} />
+                Backend Connection
+              </p>
+              <p className={`text-sm ${isBackendConnected ? 'text-green-600' : 'text-red-600'}`}>
+                {isBackendConnected ? '✅ Connected' : '❌ Not connected'}
+              </p>
             </div>
+            <button
+              onClick={testBackendConnection}
+              disabled={isTestingConnection}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-blue-400 text-sm flex items-center gap-2"
+            >
+              {isTestingConnection ? 'Testing...' : 'Test Connection'}
+            </button>
+          </div>
+          {!isBackendConnected && (
+            <p className="text-xs text-red-600 mt-2">
+              Make sure your backend server is running on port 5000. Run: <code className="bg-gray-800 text-white px-2 py-1 rounded">node server.js</code>
+            </p>
           )}
         </div>
+
+        <div className="mb-6">
+          <label htmlFor="storytellerName" className="block text-sm font-semibold text-gray-700 mb-2">1. Storyteller's Name</label>
+          <input 
+            type="text" 
+            id="storytellerName" 
+            value={storytellerName} 
+            onChange={(e) => setStorytellerName(e.target.value)} 
+            placeholder="e.g., Jane Doe" 
+            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-transparent" 
+          />
+        </div>
+
         <div>
-          <label className="block text-sm font-semibold text-gray-700 mb-2">{interviewMode === 'phone' ? '4.' : '3.'} Select a Topic</label>
+          <label className="block text-sm font-semibold text-gray-700 mb-2">2. Select a Topic</label>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             {topics.map(topic => (
-              <button key={topic.id} onClick={() => setSelectedTopic(topic.id)} className={`p-4 border rounded-lg text-center transition ${selectedTopic === topic.id ? 'bg-amber-100 border-amber-500 ring-2 ring-amber-500' : 'bg-white border-gray-200 hover:border-amber-400'}`}>
+              <button 
+                key={topic.id} 
+                onClick={() => setSelectedTopic(topic.id)} 
+                className={`p-4 border rounded-lg text-center transition ${
+                  selectedTopic === topic.id 
+                    ? 'bg-amber-100 border-amber-500 ring-2 ring-amber-500' 
+                    : 'bg-white border-gray-200 hover:border-amber-400'
+                }`}
+              >
                 <span className="text-3xl">{topic.icon}</span>
                 <p className="font-semibold mt-2 text-sm text-gray-800">{topic.title}</p>
               </button>
             ))}
           </div>
         </div>
-        {errorMessage && <p className="text-center text-red-600 mt-4">{errorMessage}</p>}
+
+        {errorMessage && <p className="text-center text-red-600 mt-4 flex items-center justify-center gap-2"><AlertTriangle size={16} /> {errorMessage}</p>}
+
         <div className="mt-8">
-          <button onClick={handleStartInterview} disabled={!storytellerName || !selectedTopic || (interviewMode === 'phone' && !phoneNumber)} className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-amber-600 text-white font-bold rounded-lg hover:bg-amber-700 transition disabled:bg-gray-400">Start Interview <ArrowRight className="w-5 h-5" /></button>
+          <button 
+            onClick={handleStartInterview} 
+            disabled={!storytellerName || !selectedTopic || !isBackendConnected}
+            className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-amber-600 text-white font-bold rounded-lg hover:bg-amber-700 transition disabled:bg-gray-400 disabled:cursor-not-allowed"
+          >
+            Start Interview <ArrowRight className="w-5 h-5" />
+          </button>
         </div>
       </div>
     </div>
@@ -280,33 +517,98 @@ export default function RecordingStoriesPage() {
 
   const renderVoiceInterview = () => (
     <div className="container mx-auto px-6 py-8 grid grid-cols-1 lg:grid-cols-3 gap-8">
-      <div className="lg:col-span-1 flex justify-center items-start pt-8">
+      <div className="lg:col-span-1 flex flex-col justify-start items-center pt-8 gap-4">
         <AiCharacter status={aiStatus} />
+        
+        {/* Save Button */}
+        <button
+          onClick={endStorySession}
+          disabled={isSaving || conversationHistory.length < 2}
+          className="mt-4 flex items-center gap-2 px-6 py-3 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition disabled:bg-gray-400 disabled:cursor-not-allowed"
+        >
+          {isSaving ? (
+            <>
+              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+              Saving...
+            </>
+          ) : (
+            <>
+              <Save className="w-5 h-5" />
+              Save Story
+            </>
+          )}
+        </button>
+        
+        {currentStoryId && (
+          <p className="text-xs text-gray-500 text-center">
+            Story ID: {currentStoryId.substring(0, 8)}...
+          </p>
+        )}
       </div>
-      <div className="lg:col-span-2 bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+      
+      <div className="lg:col-span-2 bg-white p-6 rounded-xl shadow-lg border border-gray-200 flex flex-col">
         <h2 className="text-2xl font-bold text-gray-800 mb-4">Conversation with {storytellerName}</h2>
-        <div className="h-96 overflow-y-auto pr-4 space-y-4">
+        <div className="flex-grow h-96 overflow-y-auto pr-4 space-y-4">
           {conversationHistory.map((message, index) => (
-             <div key={index} className={`flex items-end gap-2 ${message.speaker === 'user' ? 'justify-end' : 'justify-start'}`}>
-                {message.speaker === 'ai' && <img src="https://i.pravatar.cc/150?u=anna-ai" className="w-8 h-8 rounded-full" />}
-                <div className={`inline-block px-4 py-3 rounded-lg max-w-md ${message.speaker === 'ai' ? 'bg-blue-100 text-gray-800 rounded-bl-none' : 'bg-amber-100 text-gray-800 rounded-br-none'}`}>
-                    <p className="text-sm">{message.text}</p>
-                </div>
-                {message.speaker === 'user' && <User className="w-8 h-8 rounded-full p-1 bg-gray-200 text-gray-600" />}
+            <div key={index} className={`flex items-end gap-2 ${message.speaker === 'user' ? 'justify-end' : 'justify-start'}`}>
+              {message.speaker === 'ai' && <img src="https://i.pravatar.cc/150?u=anna-ai" className="w-8 h-8 rounded-full" alt="AI" />}
+              <div className={`inline-block px-4 py-3 rounded-lg max-w-md ${
+                message.speaker === 'ai' 
+                  ? 'bg-blue-100 text-gray-800 rounded-bl-none' 
+                  : 'bg-amber-100 text-gray-800 rounded-br-none'
+              }`}>
+                <p className="text-sm">{message.text}</p>
+                {message.isFallback && (
+                  <p className="text-xs text-red-500 mt-1">⚠️ Fallback response</p>
+                )}
+              </div>
+              {message.speaker === 'user' && <User className="w-8 h-8 rounded-full p-1 bg-gray-200 text-gray-600" />}
             </div>
           ))}
         </div>
-      </div>
-    </div>
-  );
-
-  const renderPhoneInterview = () => (
-    <div className="container mx-auto px-6 py-12 text-center">
-      <div className="max-w-md mx-auto p-8 bg-white rounded-xl shadow-lg border border-gray-200">
-        {callStatus === 'calling' && (<><Phone className="w-16 h-16 text-blue-500 mx-auto animate-pulse" /><h2 className="text-2xl font-bold mt-4">Calling...</h2><p className="text-gray-600 mt-2">We are connecting with {storytellerName} at {phoneNumber}.</p></>)}
-        {callStatus === 'active' && (<><div className="relative w-16 h-16 mx-auto"><Mic className="w-16 h-16 text-green-500" /><div className="absolute inset-0 rounded-full border-4 border-green-500 animate-ping"></div></div><h2 className="text-2xl font-bold mt-4">Interview in Progress</h2><p className="text-gray-600 mt-2">{storytellerName} is now sharing their stories. The conversation is being recorded.</p></>)}
-        {callStatus === 'completed' && (<><CheckCircle2 className="w-16 h-16 text-green-500 mx-auto" /><h2 className="text-2xl font-bold mt-4">Call Completed</h2><p className="text-gray-600 mt-2">The interview with {storytellerName} has finished.</p></>)}
-        {callStatus === 'error' && (<><WifiOff className="w-16 h-16 text-red-500 mx-auto" /><h2 className="text-2xl font-bold mt-4">Connection Failed</h2><p className="text-gray-600 mt-2">{errorMessage}</p><button onClick={() => { setStep(1); setCallStatus('idle'); }} className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg">Try Again</button></>)}
+        <div className="mt-4 pt-4 border-t border-gray-200">
+          <div className="flex items-center justify-between">
+            <div>
+              {isRecording ? (
+                <div className="flex items-center gap-2 text-green-600 font-medium">
+                  <Mic className="w-5 h-5 animate-pulse" />
+                  <span>Listening...</span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 text-gray-500 font-medium">
+                  <Mic className="w-5 h-5" />
+                  <span>{errorMessage ? 'Interrupted' : 'Paused'}</span>
+                </div>
+              )}
+            </div>
+            {errorMessage && (
+              <div className="flex items-center gap-2">
+                <p className="text-sm text-red-600 flex items-center gap-1">
+                  <AlertTriangle size={16} /> {errorMessage}
+                </p>
+                {retryCount >= MAX_RETRIES && (
+                  <button 
+                    onClick={() => retryVoiceInterview(false)} 
+                    className="px-3 py-1 bg-amber-600 text-white text-sm font-semibold rounded-md hover:bg-amber-700"
+                  >
+                    Retry
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+          {debugInfo && (
+            <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-800">
+              <p className="font-bold mb-1">Diagnostics:</p>
+              <ul className="list-disc list-inside">
+                <li><strong>Error Code:</strong> {debugInfo.error}</li>
+                <li><strong>Browser Status:</strong> {debugInfo.isOnline ? 'Online' : 'Offline'}</li>
+                <li><strong>Timestamp:</strong> {debugInfo.timestamp}</li>
+                <li className="break-words"><strong>Details:</strong> {debugInfo.message}</li>
+              </ul>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -315,13 +617,19 @@ export default function RecordingStoriesPage() {
     <div className="min-h-screen bg-gradient-to-b from-amber-50 to-white">
       <nav className="bg-white border-b border-gray-200 shadow-sm">
         <div className="container mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-2"><BookOpen className="w-8 h-8 text-amber-600" /><span className="text-2xl font-semibold text-gray-800">Memory Keeper Pro</span></div>
+          <div className="flex items-center gap-2">
+            <BookOpen className="w-8 h-8 text-amber-600" />
+            <span className="text-2xl font-semibold text-gray-800">Memory Keeper Pro</span>
+          </div>
+          <div className={`flex items-center gap-2 text-sm ${isBackendConnected ? 'text-green-600' : 'text-red-600'}`}>
+            <Wifi size={16} />
+            {isBackendConnected ? 'Connected' : 'Disconnected'}
+          </div>
         </div>
       </nav>
       <main>
         {step === 1 && renderSetupStep()}
-        {step === 2 && interviewMode === 'voice' && renderVoiceInterview()}
-        {step === 2 && interviewMode === 'phone' && renderPhoneInterview()}
+        {step === 2 && renderVoiceInterview()}
       </main>
     </div>
   );
