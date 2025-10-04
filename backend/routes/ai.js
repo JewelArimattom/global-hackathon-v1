@@ -53,7 +53,7 @@ const genAI = isApiKeyAvailable ? new GoogleGenerativeAI(process.env.GEMINI_API_
 
 // --- Core AI Persona ---
 const FRIENDLY_LISTENER_PROMPT = `
-You are an AI friend. Your goal is to be a warm, empathetic, and attentive listener.
+You are an AI friend. Your goal is be a warm, empathetic, and attentive listener.
 - Your tone is natural, casual, and encouraging.
 - Your responses must be very short. Use phrases like "I'm listening.", "Go on.", "That's interesting.", "Mm-hmm.", or "Tell me more."
 - NEVER ask structured questions. Your role is to listen and gently prompt the user to continue their train of thought.
@@ -85,7 +85,8 @@ router.post('/start-session', async (req, res) => {
       interviewMode: interviewMode || 'voice',
       blogPost: '',
       blogTitle: '',
-      blogTags: []
+      blogTags: [],
+      autoBlogEnabled: true // Enable auto blog generation
     });
     await newStory.save();
     console.log(`✅ New listener session started for ${storytellerName}. ID: ${newStory._id}`);
@@ -127,6 +128,14 @@ router.post('/chat', async (req, res) => {
     
     if (storyId && Story) {
       await updateStory(storyId, message, friendlyResponse);
+      
+      // Auto-generate blog after every 3 user messages
+      const story = await Story.findById(storyId);
+      const userMessages = story.conversationHistory.filter(msg => msg.speaker === 'user');
+      if (userMessages.length >= 3 && story.autoBlogEnabled && !story.blogPost) {
+        console.log('🔄 Auto-generating blog post after 3 user messages...');
+        await generateAndSaveBlogPost(storyId);
+      }
     }
     
     res.json({ 
@@ -146,7 +155,7 @@ router.post('/chat', async (req, res) => {
   }
 });
 
-// Voice message processing endpoint
+// Voice message processing with Gemini speech-to-text
 router.post('/voice-message', upload.single('audio'), async (req, res) => {
   const { storyId, storytellerName } = req.body;
   
@@ -161,8 +170,8 @@ router.post('/voice-message', upload.single('audio'), async (req, res) => {
   }
 
   try {
-    // Step 1: Convert speech to text
-    const transcribedText = await convertSpeechToText(req.file.path);
+    // Step 1: Convert speech to text using Gemini
+    const transcribedText = await convertSpeechToTextWithGemini(req.file.path);
     console.log('📝 Transcribed text:', transcribedText);
 
     if (!transcribedText || transcribedText.trim().length === 0) {
@@ -183,6 +192,14 @@ router.post('/voice-message', upload.single('audio'), async (req, res) => {
     // Step 3: Update database with both text and audio reference
     if (storyId && Story) {
       await updateStoryWithAudio(storyId, transcribedText, friendlyResponse, req.file.filename);
+      
+      // Auto-generate blog after voice messages
+      const story = await Story.findById(storyId);
+      const userMessages = story.conversationHistory.filter(msg => msg.speaker === 'user');
+      if (userMessages.length >= 2 && story.autoBlogEnabled && !story.blogPost) {
+        console.log('🔄 Auto-generating blog post after voice message...');
+        await generateAndSaveBlogPost(storyId);
+      }
     }
 
     // Step 4: Clean up audio file
@@ -216,7 +233,7 @@ router.post('/voice-message', upload.single('audio'), async (req, res) => {
   }
 });
 
-// New endpoint to generate blog post from conversation
+// Generate blog post from conversation
 router.post('/generate-blog', async (req, res) => {
   const { storyId } = req.body;
   
@@ -225,30 +242,11 @@ router.post('/generate-blog', async (req, res) => {
   }
 
   try {
-    const story = await Story.findById(storyId);
-    if (!story) {
-      return res.status(404).json({ error: 'Story not found' });
-    }
-
-    console.log('📝 Generating blog post for story:', storyId);
+    const blogData = await generateAndSaveBlogPost(storyId);
     
-    // Generate blog post from conversation
-    const { blogTitle, blogContent, blogTags } = await generateBlogPost(story.conversationHistory, story.storytellerName);
-    
-    // Update story with generated blog
-    story.blogTitle = blogTitle;
-    story.blogPost = blogContent;
-    story.blogTags = blogTags;
-    story.status = 'completed';
-    await story.save();
-
-    console.log('✅ Blog post generated successfully for story:', storyId);
-
     res.json({
       success: true,
-      blogTitle,
-      blogContent,
-      blogTags,
+      ...blogData,
       message: 'Blog post generated successfully'
     });
 
@@ -274,16 +272,14 @@ router.post('/end-session', async (req, res) => {
     story.status = 'completed';
     story.recordingDuration = recordingDuration || 0;
     
-    // Generate blog post automatically when session ends
-    try {
-      const { blogTitle, blogContent, blogTags } = await generateBlogPost(story.conversationHistory, story.storytellerName);
-      story.blogTitle = blogTitle;
-      story.blogPost = blogContent;
-      story.blogTags = blogTags;
-      console.log('✅ Blog post generated automatically for story:', storyId);
-    } catch (blogError) {
-      console.error('❌ Failed to generate blog post:', blogError);
-      // Continue without blog post - don't fail the entire request
+    // Auto-generate blog post if not already generated
+    if (!story.blogPost && story.autoBlogEnabled) {
+      try {
+        const blogData = await generateAndSaveBlogPost(storyId);
+        console.log('✅ Blog post generated automatically for story:', storyId);
+      } catch (blogError) {
+        console.error('❌ Failed to generate blog post:', blogError);
+      }
     }
     
     await story.save();
@@ -294,7 +290,12 @@ router.post('/end-session', async (req, res) => {
       storyId: story._id,
       summary: finalSummary,
       blogTitle: story.blogTitle,
-      blogGenerated: !!story.blogPost
+      blogGenerated: !!story.blogPost,
+      blogData: story.blogPost ? {
+        blogTitle: story.blogTitle,
+        blogContent: story.blogPost,
+        blogTags: story.blogTags
+      } : null
     });
   } catch (error) {
     console.error('❌ Error ending story session:', error);
@@ -346,72 +347,132 @@ async function updateStoryWithAudio(storyId, userMessage, aiResponse, audioFilen
   }
 }
 
-async function convertSpeechToText(audioFilePath) {
-  // Mock implementation - replace with actual Google Speech-to-Text
-  return await mockSpeechToText(audioFilePath);
+async function convertSpeechToTextWithGemini(audioFilePath) {
+  if (!isApiKeyAvailable) {
+    // Fallback to mock transcription
+    return await mockSpeechToText(audioFilePath);
+  }
+
+  try {
+    // Read audio file and convert to base64
+    const audioFile = fs.readFileSync(audioFilePath);
+    const base64Audio = audioFile.toString('base64');
+
+    const model = genAI.getGenerativeModel({ 
+      model: "gemini-1.5-pro-latest",
+      generationConfig: {
+        temperature: 0.1,
+        topP: 0.8,
+        topK: 40,
+      }
+    });
+
+    const prompt = `
+      Please transcribe the following audio file accurately. 
+      Return only the transcribed text without any additional commentary or formatting.
+      If the audio is unclear or contains background noise, do your best to transcribe what you hear.
+    `;
+
+    // Create the request with the audio file
+    const result = await model.generateContent([
+      prompt,
+      {
+        inlineData: {
+          mimeType: 'audio/webm',
+          data: base64Audio
+        }
+      }
+    ]);
+
+    const transcription = result.response.text().trim();
+    console.log('🎯 Gemini Transcription:', transcription);
+    return transcription;
+
+  } catch (error) {
+    console.error('🔴 Gemini speech-to-text error:', error);
+    // Fallback to mock transcription
+    return await mockSpeechToText(audioFilePath);
+  }
 }
 
 async function mockSpeechToText(audioFilePath) {
   const mockResponses = [
-    "I was thinking about my childhood and all the memories I have growing up in a small town.",
-    "The other day I went for a walk in the park and saw the most beautiful sunset I've ever seen.",
-    "I remember when I first learned to ride a bicycle - it was such a freeing experience.",
-    "My grandmother used to tell me stories about her life during the war, and they've always stayed with me.",
-    "I've been thinking a lot about the future lately and what I want to accomplish in my career.",
-    "There's this little coffee shop I used to visit when I was in college that had the best atmosphere.",
-    "I had the most interesting dream last night about traveling to a foreign country and meeting new people.",
-    "I want to share something that's been on my mind about the importance of community and connection.",
-    "Life has been quite a journey for me so far, with many ups and downs but valuable lessons learned.",
-    "I remember the first time I saw the ocean - the vastness and power of it took my breath away."
+    "I was thinking about my childhood memories and how they shaped who I am today.",
+    "The other day I had this incredible experience that really changed my perspective on life.",
+    "I remember when I first discovered my passion for storytelling and how it transformed my career.",
+    "My family has always been my rock, and I want to share some stories about our journey together.",
+    "I've been reflecting on the importance of community and how it impacts our daily lives.",
+    "There's this beautiful place I visited recently that reminded me of the simple joys in life.",
+    "I learned some valuable lessons from my mentors that I think could help others too.",
+    "The journey of personal growth has been challenging but incredibly rewarding for me.",
+    "I want to talk about the power of resilience and how it helped me overcome obstacles.",
+    "Finding balance in life has been my biggest challenge and greatest achievement."
   ];
   
-  await new Promise(resolve => setTimeout(resolve, 1000));
+  await new Promise(resolve => setTimeout(resolve, 800));
   return mockResponses[Math.floor(Math.random() * mockResponses.length)];
 }
 
-async function generateBlogPost(conversationHistory, storytellerName) {
+async function generateAndSaveBlogPost(storyId) {
   if (!isApiKeyAvailable) {
-    return {
-      blogTitle: "Test Blog Post",
-      blogContent: "This is a test blog post. In production, this would be generated from your conversation.",
-      blogTags: ["test", "conversation", "story"]
+    const blogData = {
+      blogTitle: "A Personal Story Journey",
+      blogContent: "This is a sample blog post that would be generated from your conversation in production mode.",
+      blogTags: ["personal", "story", "journey"]
     };
+    
+    if (Story) {
+      await Story.findByIdAndUpdate(storyId, blogData);
+    }
+    
+    return blogData;
   }
 
-  const userMessages = conversationHistory
-    .filter(msg => msg.speaker === 'user')
-    .map(msg => msg.text)
-    .join('\n\n');
-
-  const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro-latest" });
-
-  const prompt = `
-    You are a professional blog writer. Based on the following conversation with ${storytellerName}, create a compelling blog post.
-
-    CONVERSATION TRANSCRIPT:
-    ${userMessages}
-
-    Please generate:
-    1. A catchy, engaging title (max 60 characters)
-    2. A well-structured blog post (500-800 words) that captures the essence of the story
-    3. 3-5 relevant tags
-
-    Format your response as JSON exactly like this:
-    {
-      "blogTitle": "The Title Here",
-      "blogContent": "Full blog post content here...",
-      "blogTags": ["tag1", "tag2", "tag3"]
+  try {
+    const story = await Story.findById(storyId);
+    if (!story) {
+      throw new Error('Story not found');
     }
 
-    Make the blog post:
-    - Engaging and personal
-    - Well-structured with paragraphs
-    - Capture the emotional essence of the story
-    - Suitable for a general audience
-    - Include relevant insights or lessons learned
-  `;
+    const userMessages = story.conversationHistory
+      .filter(msg => msg.speaker === 'user')
+      .map(msg => msg.text)
+      .join('\n\n');
 
-  try {
+    const model = genAI.getGenerativeModel({ 
+      model: "gemini-1.5-pro-latest",
+      generationConfig: {
+        temperature: 0.7,
+        topP: 0.8,
+        topK: 40,
+      }
+    });
+
+    const prompt = `
+      Create a compelling, well-structured blog post based on the following personal conversation. 
+      The blog should capture the essence of the story while making it engaging for readers.
+
+      CONVERSATION CONTENT:
+      ${userMessages}
+
+      REQUIREMENTS:
+      - Create a catchy, emotional title (max 60 characters)
+      - Write 500-800 words of engaging content
+      - Structure with clear paragraphs and natural flow
+      - Capture the emotional journey and key insights
+      - Make it personal and relatable
+      - Include 3-5 relevant tags
+
+      FORMAT: Return ONLY valid JSON without any markdown or additional text:
+      {
+        "blogTitle": "The Title Here",
+        "blogContent": "Full blog post content here...",
+        "blogTags": ["tag1", "tag2", "tag3"]
+      }
+
+      Make the blog post inspiring, well-written, and suitable for a general audience.
+    `;
+
     const result = await model.generateContent(prompt);
     const responseText = result.response.text().trim();
     
@@ -419,6 +480,22 @@ async function generateBlogPost(conversationHistory, storytellerName) {
     const jsonMatch = responseText.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       const blogData = JSON.parse(jsonMatch[0]);
+      
+      // Validate and clean the data
+      if (!blogData.blogTitle || !blogData.blogContent) {
+        throw new Error('Invalid blog data generated');
+      }
+
+      // Save to database
+      if (Story) {
+        await Story.findByIdAndUpdate(storyId, {
+          blogTitle: blogData.blogTitle,
+          blogPost: blogData.blogContent,
+          blogTags: blogData.blogTags || []
+        });
+      }
+
+      console.log('✅ Blog post generated and saved:', blogData.blogTitle);
       return blogData;
     } else {
       throw new Error('Invalid response format from AI');
@@ -427,11 +504,17 @@ async function generateBlogPost(conversationHistory, storytellerName) {
     console.error('🔴 Error generating blog post:', error);
     
     // Fallback blog post
-    return {
-      blogTitle: `Conversation with ${storytellerName}`,
-      blogContent: `This blog post is based on a conversation with ${storytellerName}. The conversation covered various personal stories and experiences that would make for an engaging read once processed.`,
-      blogTags: ["conversation", "personal-story", "interview"]
+    const fallbackBlog = {
+      blogTitle: "A Personal Journey of Discovery",
+      blogContent: `This blog post captures the personal stories and insights shared in a recent conversation. The speaker reflected on various life experiences, lessons learned, and moments that shaped their perspective. While the full depth of the conversation is preserved in our records, this blog serves as a testament to the power of personal storytelling and the wisdom that emerges when we take time to reflect on our journeys.`,
+      blogTags: ["personal-growth", "storytelling", "reflection"]
     };
+
+    if (Story) {
+      await Story.findByIdAndUpdate(storyId, fallbackBlog);
+    }
+
+    return fallbackBlog;
   }
 }
 
@@ -440,15 +523,21 @@ async function generateAcknowledgement(userMessage, history, storytellerName) {
     return "I'm listening... (Test Mode)";
   }
 
-  const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+  const model = genAI.getGenerativeModel({ 
+    model: "gemini-2.5-flash",
+    generationConfig: {
+      temperature: 0.7,
+      topP: 0.8,
+      topK: 40,
+      maxOutputTokens: 50,
+    }
+  });
 
-  const conversationContext = (history || []).slice(-10).map(msg => 
+  const conversationContext = (history || []).slice(-6).map(msg => 
     `${msg.speaker === 'user' ? storytellerName : 'Friend'}: ${msg.text}`
   ).join('\n');
   
   const prompt = `${FRIENDLY_LISTENER_PROMPT}\n\nCONVERSATION HISTORY:\n${conversationContext}\n\n${storytellerName}: "${userMessage}"\n\nFriend:`;
-  
-  console.log('🤖 Generating AI response...');
   
   try {
     const result = await model.generateContent(prompt);
@@ -458,7 +547,7 @@ async function generateAcknowledgement(userMessage, history, storytellerName) {
   } catch(error) {
     console.error(`--- 🔴 GEMINI ERROR ---`);
     console.error("Failed to generate response:", error);
-    throw new Error("Gemini API call failed.");
+    return "I'm listening. Please continue...";
   }
 }
 
@@ -470,16 +559,16 @@ async function generateFinalSummary(conversationHistory, storytellerName) {
     .map(msg => msg.text)
     .join('\n\n');
   
-  const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro-latest" });
+  const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
   
   const prompt = `
-    Create a concise, bullet-pointed summary of the main topics and memories shared by ${storytellerName}.
+    Create a concise, warm summary of the main stories and insights shared by ${storytellerName}.
+    Focus on the emotional journey and key moments.
     
-    **Transcript:**
-    ---
+    Conversation:
     ${transcript}
-    ---
-    **Summary:**
+    
+    Summary:
   `;
   
   try {

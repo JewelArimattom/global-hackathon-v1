@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { BookOpen, Mic, User, ArrowRight, AlertTriangle, Wifi, Save, Loader2, MessageSquare, Play, Square, FileText } from 'lucide-react';
+import { BookOpen, Mic, User, AlertTriangle, Wifi, Save, Loader2, MessageSquare, Play, Square, FileText, Sparkles } from 'lucide-react';
 
 // Types
 interface ConversationMessage {
@@ -13,10 +13,9 @@ interface ConversationMessage {
 interface AIResponse {
   response: string;
   timestamp: string;
-  extractedData?: any;
-  isFallback?: boolean;
   storyId?: string;
   transcribedText?: string;
+  isFallback?: boolean;
 }
 
 interface BlogData {
@@ -42,15 +41,14 @@ export default function RecordingStoriesPage() {
   const [blogData, setBlogData] = useState<BlogData | null>(null);
   const [showBlogPreview, setShowBlogPreview] = useState(false);
   const [isGeneratingBlog, setIsGeneratingBlog] = useState(false);
+  const [autoBlogEnabled, setAutoBlogEnabled] = useState(true);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const recordingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   
-  // Hardcoded values
   const storytellerName = 'Friend';
-  const selectedTopic = 'wisdom';
 
   // Scroll to the bottom of the chat
   useEffect(() => {
@@ -66,7 +64,6 @@ export default function RecordingStoriesPage() {
     } else {
       if (recordingIntervalRef.current) {
         clearInterval(recordingIntervalRef.current);
-        recordingIntervalRef.current = null;
       }
     }
 
@@ -79,20 +76,17 @@ export default function RecordingStoriesPage() {
 
   // Test backend connection on mount
   useEffect(() => {
-    fetch('http://localhost:5000/api/ai/health')
-      .then(res => setIsBackendConnected(res.ok))
-      .catch(() => setIsBackendConnected(false));
-
-    return () => {
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-        mediaRecorderRef.current.stop();
-      }
-      speechSynthesis.cancel();
-      if (recordingIntervalRef.current) {
-        clearInterval(recordingIntervalRef.current);
-      }
-    };
+    checkBackendConnection();
   }, []);
+
+  const checkBackendConnection = async () => {
+    try {
+      const response = await fetch('http://localhost:5000/api/ai/health');
+      setIsBackendConnected(response.ok);
+    } catch {
+      setIsBackendConnected(false);
+    }
+  };
 
   // --- API Functions ---
 
@@ -101,14 +95,22 @@ export default function RecordingStoriesPage() {
       const response = await fetch('http://localhost:5000/api/ai/start-session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ storytellerName, topic: selectedTopic, interviewMode: 'voice' }),
+        body: JSON.stringify({ 
+          storytellerName, 
+          topic: 'personal-stories', 
+          interviewMode: 'voice' 
+        }),
       });
       if (!response.ok) throw new Error('Failed to start story session');
       const data = await response.json();
       setCurrentStoryId(data.storyId);
       setRecordingStartTime(Date.now());
       setRecordingDuration(0);
-      const greeting: ConversationMessage = { speaker: 'ai', text: data.greeting, timestamp: new Date() };
+      const greeting: ConversationMessage = { 
+        speaker: 'ai', 
+        text: data.greeting, 
+        timestamp: new Date() 
+      };
       setConversationHistory([greeting]);
       return data.greeting;
     } catch (error) {
@@ -132,12 +134,20 @@ export default function RecordingStoriesPage() {
       if (!response.ok) throw new Error('Failed to save story session');
       const data = await response.json();
       
-      // Generate blog post after saving
-      await generateBlogPost();
+      if (data.blogData) {
+        setBlogData({
+          blogTitle: data.blogData.blogTitle,
+          blogContent: data.blogData.blogContent,
+          blogTags: data.blogData.blogTags,
+          success: true,
+          message: 'Blog generated automatically!'
+        });
+        setShowBlogPreview(true);
+      }
       
-      alert('Story saved successfully and blog post generated!');
+      alert('Story saved successfully! ' + (data.blogGenerated ? 'Blog was generated.' : ''));
       
-      // Reset to start
+      // Reset state
       setInterviewState('ready');
       setConversationHistory([]);
       setCurrentStoryId(null);
@@ -169,7 +179,7 @@ export default function RecordingStoriesPage() {
       
     } catch (error) {
       console.error('Error generating blog post:', error);
-      setErrorMessage('Failed to generate blog post, but story was saved.');
+      setErrorMessage('Failed to generate blog post.');
     } finally {
       setIsGeneratingBlog(false);
     }
@@ -190,74 +200,22 @@ export default function RecordingStoriesPage() {
     }
   };
 
-  const sendVoiceMessage = async (audioBlob: Blob): Promise<AIResponse> => {
-    setAiStatus('thinking');
-    
-    const formData = new FormData();
-    formData.append('audio', audioBlob, 'recording.webm');
-    formData.append('storyId', currentStoryId || '');
-    formData.append('storytellerName', storytellerName);
-
-    const response = await fetch('http://localhost:5000/api/ai/voice-message', {
-      method: 'POST',
-      body: formData,
-    });
-
-    if (!response.ok) throw new Error(`Server error: ${response.status}`);
-    return await response.json();
-  };
-
-  const processUserResponse = async (userInput: string, isVoice: boolean = false) => {
-    const userMessage: ConversationMessage = { 
-      speaker: 'user', 
-      text: userInput, 
-      timestamp: new Date(),
-      isVoice: isVoice 
-    };
-    
-    setConversationHistory(prev => [...prev, userMessage]);
-
+  const processVoiceMessage = async (audioBlob: Blob) => {
     try {
-      let aiData: AIResponse;
-      
-      if (isVoice) {
-        // For voice messages, we don't need to call the chat endpoint separately
-        // The voice-message endpoint already returns the AI response
-        aiData = await sendVoiceMessage(new Blob()); // We'll replace this with actual audio blob
-      } else {
-        // For text messages, use the chat endpoint
-        const response = await fetch('http://localhost:5000/api/ai/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            message: userInput, 
-            storytellerName,
-            storyId: currentStoryId
-          }),
-        });
-        if (!response.ok) throw new Error(`Server error: ${response.status}`);
-        aiData = await response.json();
-      }
+      const formData = new FormData();
+      formData.append('audio', audioBlob, 'recording.webm');
+      formData.append('storyId', currentStoryId || '');
+      formData.append('storytellerName', storytellerName);
 
-      const aiMessage: ConversationMessage = { 
-        speaker: 'ai', 
-        text: aiData.response, 
-        timestamp: new Date(), 
-        isFallback: aiData.isFallback 
-      };
-      
-      setConversationHistory(prev => [...prev, aiMessage]);
-      await speakText(aiData.response);
+      const response = await fetch('http://localhost:5000/api/ai/voice-message', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) throw new Error('Failed to process voice message');
+      return await response.json();
     } catch (error) {
-      console.error('Error processing response:', error);
-      const errorMsg: ConversationMessage = { 
-        speaker: 'ai', 
-        text: "I'm having trouble connecting. Let's try that again in a moment.", 
-        timestamp: new Date(), 
-        isFallback: true 
-      };
-      setConversationHistory(prev => [...prev, errorMsg]);
-      await speakText(errorMsg.text);
+      throw error;
     }
   };
 
@@ -265,8 +223,19 @@ export default function RecordingStoriesPage() {
     return new Promise((resolve) => {
       setAiStatus('speaking');
       const utterance = new SpeechSynthesisUtterance(text);
-      utterance.onend = () => { setAiStatus('idle'); resolve(); };
-      utterance.onerror = () => { setAiStatus('idle'); resolve(); };
+      utterance.rate = 0.9;
+      utterance.pitch = 1;
+      utterance.volume = 0.8;
+      
+      utterance.onend = () => { 
+        setAiStatus('idle'); 
+        resolve(); 
+      };
+      utterance.onerror = () => { 
+        setAiStatus('idle'); 
+        resolve(); 
+      };
+      
       speechSynthesis.speak(utterance);
     });
   };
@@ -279,7 +248,8 @@ export default function RecordingStoriesPage() {
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
-          sampleRate: 48000
+          sampleRate: 48000,
+          channelCount: 1
         } 
       });
 
@@ -302,14 +272,14 @@ export default function RecordingStoriesPage() {
         stream.getTracks().forEach(track => track.stop());
       };
 
-      mediaRecorder.start(1000);
+      mediaRecorder.start(500); // Collect data every 500ms for better responsiveness
       setIsRecording(true);
       setRecordingStartTime(Date.now());
       setErrorMessage('');
 
     } catch (error) {
       console.error('Error starting recording:', error);
-      setErrorMessage('Failed to access microphone. Please check permissions.');
+      setErrorMessage('Microphone access denied. Please allow microphone permissions.');
     }
   };
 
@@ -324,33 +294,21 @@ export default function RecordingStoriesPage() {
     try {
       const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
       
-      // Show temporary message while processing
+      // Show temporary processing message
       const tempMessage: ConversationMessage = { 
         speaker: 'user', 
-        text: '🎤 Processing voice message...', 
+        text: '🎤 Converting speech to text...', 
         timestamp: new Date(),
         isVoice: true 
       };
       setConversationHistory(prev => [...prev, tempMessage]);
 
-      // Send to backend for speech-to-text and AI response
-      const formData = new FormData();
-      formData.append('audio', audioBlob, 'recording.webm');
-      formData.append('storyId', currentStoryId || '');
-      formData.append('storytellerName', storytellerName);
+      // Process voice message
+      const data = await processVoiceMessage(audioBlob);
 
-      const response = await fetch('http://localhost:5000/api/ai/voice-message', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) throw new Error('Failed to process voice message');
-
-      const data = await response.json();
-
-      // Remove temporary message and add actual transcribed message
+      // Replace temporary message with actual transcription
       setConversationHistory(prev => {
-        const newHistory = prev.filter(msg => msg.text !== '🎤 Processing voice message...');
+        const newHistory = prev.filter(msg => msg.text !== '🎤 Converting speech to text...');
         const userMessage: ConversationMessage = { 
           speaker: 'user', 
           text: data.transcribedText, 
@@ -365,7 +323,16 @@ export default function RecordingStoriesPage() {
         return [...newHistory, userMessage, aiMessage];
       });
 
+      // Speak AI response
       await speakText(data.response);
+
+      // Auto-generate blog after sufficient content
+      const userMessages = conversationHistory.filter(msg => msg.speaker === 'user').length + 1;
+      if (userMessages >= 2 && autoBlogEnabled && !blogData) {
+        setTimeout(() => {
+          generateBlogPost();
+        }, 2000);
+      }
 
     } catch (error) {
       console.error('Error processing recording:', error);
@@ -373,17 +340,16 @@ export default function RecordingStoriesPage() {
       
       // Remove temporary message on error
       setConversationHistory(prev => 
-        prev.filter(msg => msg.text !== '🎤 Processing voice message...')
+        prev.filter(msg => msg.text !== '🎤 Converting speech to text...')
       );
       
       const errorMsg: ConversationMessage = { 
         speaker: 'ai', 
-        text: "I couldn't process your voice message. Please try again.", 
+        text: "I couldn't process that. Please try speaking again.", 
         timestamp: new Date(), 
         isFallback: true 
       };
       setConversationHistory(prev => [...prev, errorMsg]);
-      await speakText(errorMsg.text);
     }
   };
 
@@ -400,25 +366,38 @@ export default function RecordingStoriesPage() {
   const renderMessageBubble = (message: ConversationMessage, index: number) => {
     const isUser = message.speaker === 'user';
     return (
-      <div key={index} className={`flex items-end gap-2 ${isUser ? 'justify-end' : 'justify-start'}`}>
-        {!isUser && <img src="https://i.pravatar.cc/150?u=anna-ai" className="w-8 h-8 rounded-full self-start" alt="AI" />}
-        <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}>
-          <div className={`inline-block px-4 py-3 rounded-2xl max-w-md md:max-w-lg ${
-            isUser 
-              ? 'bg-teal-600 text-white rounded-br-none' 
-              : 'bg-white text-slate-800 rounded-bl-none border border-slate-200'
-          }`}>
-            <div className="flex items-center gap-2">
-              {message.isVoice && <Mic className="w-3 h-3" />}
-              <p className="text-sm">{message.text}</p>
+      <div key={index} className={`flex items-end gap-3 ${isUser ? 'justify-end' : 'justify-start'} mb-4`}>
+        {!isUser && (
+          <div className="flex-shrink-0">
+            <div className="w-10 h-10 bg-gradient-to-br from-teal-500 to-blue-600 rounded-full flex items-center justify-center">
+              <span className="text-white font-bold text-sm">AI</span>
             </div>
           </div>
-          {message.isFallback && <p className="text-xs text-red-500 mt-1">⚠️ Fallback response</p>}
-          <span className="text-xs text-slate-500 mt-1">
+        )}
+        
+        <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} max-w-[70%]`}>
+          <div className={`inline-block px-4 py-3 rounded-2xl ${
+            isUser 
+              ? 'bg-gradient-to-br from-teal-600 to-teal-700 text-white rounded-br-none' 
+              : 'bg-white text-slate-800 rounded-bl-none border border-slate-200 shadow-sm'
+          }`}>
+            <div className="flex items-center gap-2">
+              {message.isVoice && <Mic className="w-4 h-4" />}
+              <p className="text-sm leading-relaxed">{message.text}</p>
+            </div>
+          </div>
+          <span className="text-xs text-slate-500 mt-1 px-1">
             {message.timestamp?.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </span>
         </div>
-        {isUser && <User className="w-8 h-8 rounded-full p-1.5 bg-slate-200 text-slate-600 self-start" />}
+        
+        {isUser && (
+          <div className="flex-shrink-0">
+            <div className="w-10 h-10 bg-slate-200 rounded-full flex items-center justify-center">
+              <User className="w-5 h-5 text-slate-600" />
+            </div>
+          </div>
+        )}
       </div>
     );
   };
@@ -428,40 +407,49 @@ export default function RecordingStoriesPage() {
 
     return (
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-        <div className="bg-white rounded-lg max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+        <div className="bg-white rounded-xl max-w-4xl w-full max-h-[90vh] overflow-y-auto shadow-2xl">
           <div className="p-6">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-2xl font-bold text-slate-800">Generated Blog Post</h2>
+            <div className="flex justify-between items-center mb-6 pb-4 border-b border-slate-200">
+              <div className="flex items-center gap-3">
+                <Sparkles className="w-6 h-6 text-teal-600" />
+                <h2 className="text-2xl font-bold text-slate-800">Generated Blog Post</h2>
+              </div>
               <button
                 onClick={() => setShowBlogPreview(false)}
-                className="text-slate-500 hover:text-slate-700"
+                className="text-slate-400 hover:text-slate-600 transition-colors"
               >
                 ✕
               </button>
             </div>
             
-            <div className="mb-6">
-              <h1 className="text-3xl font-bold text-teal-700 mb-4">{blogData.blogTitle}</h1>
-              <div className="flex flex-wrap gap-2 mb-4">
+            <div className="mb-8">
+              <h1 className="text-4xl font-bold text-slate-800 mb-4 leading-tight">
+                {blogData.blogTitle}
+              </h1>
+              <div className="flex flex-wrap gap-2 mb-6">
                 {blogData.blogTags.map((tag, index) => (
-                  <span key={index} className="bg-teal-100 text-teal-800 px-3 py-1 rounded-full text-sm">
+                  <span 
+                    key={index} 
+                    className="bg-gradient-to-r from-teal-100 to-blue-100 text-teal-800 px-3 py-1 rounded-full text-sm font-medium"
+                  >
                     #{tag}
                   </span>
                 ))}
               </div>
             </div>
             
-            <div className="prose max-w-none">
-              {blogData.blogContent.split('\n').map((paragraph, index) => (
-                <p key={index} className="mb-4 text-slate-700 leading-relaxed">
+            <article className="prose prose-lg max-w-none">
+              {blogData.blogContent.split('\n\n').map((paragraph, index) => (
+                <p key={index} className="text-slate-700 leading-relaxed mb-4 text-lg">
                   {paragraph}
                 </p>
               ))}
-            </div>
+            </article>
             
             <div className="mt-8 pt-6 border-t border-slate-200">
-              <p className="text-sm text-slate-500">
-                This blog post was automatically generated from your conversation with AI Interviewer.
+              <p className="text-sm text-slate-500 flex items-center gap-2">
+                <Sparkles className="w-4 h-4" />
+                This blog post was automatically generated from your conversation using AI.
               </p>
             </div>
           </div>
@@ -471,10 +459,10 @@ export default function RecordingStoriesPage() {
   };
 
   const getStatusText = () => {
-    if (aiStatus === 'speaking') return 'Anna is speaking...';
-    if (aiStatus === 'thinking') return 'Anna is thinking...';
-    if (isRecording) return `Recording... ${recordingDuration}s`;
-    if (errorMessage) return 'Interview interrupted';
+    if (aiStatus === 'speaking') return 'AI is speaking...';
+    if (aiStatus === 'thinking') return 'Processing...';
+    if (isRecording) return `Recording • ${recordingDuration}s`;
+    if (errorMessage) return 'Error occurred';
     return 'Ready to record';
   };
 
@@ -487,95 +475,128 @@ export default function RecordingStoriesPage() {
   const renderFooter = () => {
     if (interviewState === 'ready') {
       return (
-        <div className="p-4 bg-white border-t border-slate-200 flex flex-col items-center justify-center">
+        <div className="p-6 bg-white border-t border-slate-200">
+          <div className="max-w-2xl mx-auto text-center">
             <button 
               onClick={handleBeginInterview}
               disabled={!isBackendConnected}
-              className="px-8 py-4 bg-teal-600 text-white font-bold rounded-full hover:bg-teal-700 transition disabled:bg-slate-400 disabled:cursor-not-allowed flex items-center gap-3 text-lg"
+              className="px-8 py-4 bg-gradient-to-r from-teal-600 to-blue-600 text-white font-bold rounded-full hover:from-teal-700 hover:to-blue-700 transition-all disabled:bg-slate-400 disabled:cursor-not-allowed flex items-center gap-3 text-lg mx-auto shadow-lg"
             >
-              <Play className="w-6 h-6" /> Start Conversation
+              <Play className="w-6 h-6" /> Start Story Session
             </button>
+            
+            <div className="mt-4 flex items-center justify-center gap-4">
+              <div className={`flex items-center gap-2 text-sm font-medium ${isBackendConnected ? 'text-green-600' : 'text-red-600'}`}>
+                <Wifi size={16} />
+                {isBackendConnected ? 'Backend Connected' : 'Backend Disconnected'}
+              </div>
+              
+              <div className="flex items-center gap-2 text-sm text-slate-600">
+                <Sparkles size={16} />
+                Auto-Blog Generation
+              </div>
+            </div>
+            
             {!isBackendConnected && (
-              <p className="text-red-600 text-sm mt-3 flex items-center gap-2">
+              <p className="text-red-600 text-sm mt-3 flex items-center justify-center gap-2">
                 <AlertTriangle size={16} />
-                Cannot connect to server. Please try again later.
+                Cannot connect to server. Please make sure the backend is running.
               </p>
             )}
+          </div>
         </div>
       );
     }
 
     return (
-      <div className="p-4 bg-white border-t border-slate-200">
-        <div className="flex items-center justify-center gap-6">
-          <div className="flex flex-col items-center gap-2 text-center">
-            <button
-              onClick={toggleRecording}
-              disabled={aiStatus === 'thinking' || aiStatus === 'speaking'}
-              className={`relative flex items-center justify-center w-16 h-16 rounded-full transition-all duration-300 ${
-                isRecording 
-                  ? 'bg-red-500 hover:bg-red-600 text-white' 
-                  : 'bg-teal-500 hover:bg-teal-600 text-white'
-              } disabled:bg-slate-400 disabled:cursor-not-allowed`}
-            >
-              {isRecording && <div className="absolute inset-0 bg-red-500 rounded-full animate-ping opacity-50"></div>}
-              {isRecording ? <Square className="w-6 h-6 z-10" /> : <Mic className="w-6 h-6 z-10" />}
-            </button>
-            <p className="text-sm font-medium text-slate-600 h-5">{getStatusText()}</p>
+      <div className="p-6 bg-white border-t border-slate-200">
+        <div className="max-w-2xl mx-auto">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-4">
+              <button
+                onClick={toggleRecording}
+                disabled={aiStatus === 'thinking' || aiStatus === 'speaking'}
+                className={`relative flex items-center justify-center w-14 h-14 rounded-full transition-all duration-300 shadow-lg ${
+                  isRecording 
+                    ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse' 
+                    : 'bg-gradient-to-r from-teal-500 to-blue-500 hover:from-teal-600 hover:to-blue-600 text-white'
+                } disabled:bg-slate-400 disabled:cursor-not-allowed`}
+              >
+                {isRecording ? <Square className="w-6 h-6 z-10" /> : <Mic className="w-6 h-6 z-10" />}
+              </button>
+              
+              <div className="flex flex-col">
+                <p className="text-sm font-medium text-slate-700">{getStatusText()}</p>
+                {recordingDuration > 0 && (
+                  <p className="text-xs text-slate-500">
+                    Total: {formatDuration(recordingDuration)}
+                  </p>
+                )}
+              </div>
+            </div>
+            
+            <div className="flex gap-3">
+              <button
+                onClick={generateBlogPost}
+                disabled={isGeneratingBlog || conversationHistory.length < 3}
+                className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-purple-600 to-pink-600 text-white font-semibold rounded-lg hover:from-purple-700 hover:to-pink-700 transition disabled:bg-slate-400 shadow-md"
+              >
+                {isGeneratingBlog ? <Loader2 className="w-5 h-5 animate-spin" /> : <FileText className="w-5 h-5" />}
+                Generate Blog
+              </button>
+              
+              <button
+                onClick={endStorySession}
+                disabled={isSaving}
+                className="flex items-center gap-2 px-5 py-2.5 bg-slate-700 text-white font-semibold rounded-lg hover:bg-slate-800 transition disabled:bg-slate-400 shadow-md"
+              >
+                {isSaving ? <Loader2 className="w-5 h-5 animate-spin" /> : <Save className="w-5 h-5" />}
+                Save Story
+              </button>
+            </div>
           </div>
           
-          <div className="flex gap-3">
-            <button
-              onClick={generateBlogPost}
-              disabled={isGeneratingBlog || conversationHistory.length < 2}
-              className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 transition disabled:bg-slate-400"
-            >
-              {isGeneratingBlog ? <Loader2 className="w-5 h-5 animate-spin" /> : <FileText className="w-5 h-5" />}
-              Generate Blog
-            </button>
-            
-            <button
-              onClick={endStorySession}
-              disabled={isSaving || conversationHistory.length < 2}
-              className="flex items-center gap-2 px-5 py-2.5 bg-slate-700 text-white font-semibold rounded-lg hover:bg-slate-800 transition disabled:bg-slate-400"
-            >
-              {isSaving ? <Loader2 className="w-5 h-5 animate-spin" /> : <Save className="w-5 h-5" />}
-              End & Save
-            </button>
-          </div>
+          {errorMessage && (
+            <p className="text-center text-red-600 text-sm flex items-center justify-center gap-2 bg-red-50 py-2 rounded-lg">
+              <AlertTriangle size={16} /> {errorMessage}
+            </p>
+          )}
+          
+          {blogData && (
+            <p className="text-center text-green-600 text-sm flex items-center justify-center gap-2 bg-green-50 py-2 rounded-lg">
+              <Sparkles size={16} /> Blog post generated successfully!
+            </p>
+          )}
         </div>
-        
-        {errorMessage && (
-          <p className="text-center text-red-600 text-sm mt-3 flex items-center justify-center gap-2">
-            <AlertTriangle size={16} /> {errorMessage}
-          </p>
-        )}
-        
-        {recordingDuration > 0 && (
-          <p className="text-center text-slate-500 text-sm mt-2">
-            Total recording time: {formatDuration(recordingDuration)}
-          </p>
-        )}
       </div>
     );
   };
 
   return (
-    <div className="flex flex-col h-screen bg-slate-50 font-sans">
+    <div className="flex flex-col h-screen bg-gradient-to-br from-slate-50 to-blue-50 font-sans">
       <nav className="bg-white border-b border-slate-200 shadow-sm flex-shrink-0">
-        <div className="container mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
+        <div className="container mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <BookOpen className="w-8 h-8 text-teal-600" />
-            <span className="text-xl font-semibold text-slate-800">AI Interviewer</span>
+            <div className="bg-gradient-to-br from-teal-600 to-blue-600 p-2 rounded-lg">
+              <BookOpen className="w-6 h-6 text-white" />
+            </div>
+            <div>
+              <span className="text-xl font-bold text-slate-800">Story Weaver AI</span>
+              <p className="text-xs text-slate-500">Turn conversations into beautiful blogs</p>
+            </div>
           </div>
           <div className="flex items-center gap-4">
             {currentStoryId && (
-              <span className="text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded">
+              <span className="text-xs text-slate-500 bg-slate-100 px-3 py-1 rounded-full border">
                 Session: {currentStoryId.slice(-8)}
               </span>
             )}
-            <div className={`flex items-center gap-2 text-sm font-medium ${isBackendConnected ? 'text-green-600' : 'text-red-600'}`}>
-              <Wifi size={16} />
+            <div className={`flex items-center gap-2 text-sm font-medium px-3 py-1 rounded-full ${
+              isBackendConnected 
+                ? 'bg-green-100 text-green-700' 
+                : 'bg-red-100 text-red-700'
+            }`}>
+              <Wifi size={14} />
               {isBackendConnected ? 'Connected' : 'Disconnected'}
             </div>
           </div>
@@ -583,19 +604,24 @@ export default function RecordingStoriesPage() {
       </nav>
 
       <main className="flex-grow p-4 sm:p-6 overflow-y-auto">
-        <div className="max-w-2xl mx-auto space-y-6">
+        <div className="max-w-4xl mx-auto">
           {conversationHistory.length === 0 && (
-            <div className="text-center py-12 px-4">
-              <MessageSquare className="w-16 h-16 mx-auto text-slate-300" />
-              <h2 className="mt-4 text-2xl font-semibold text-slate-700">Ready to Listen</h2>
-              <p className="mt-2 text-slate-500">
-                Click "Start Conversation" below to begin sharing your story. 
-                Your conversation will be automatically converted into a blog post!
+            <div className="text-center py-16 px-4">
+              <div className="bg-gradient-to-br from-teal-100 to-blue-100 w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6">
+                <MessageSquare className="w-12 h-12 text-teal-600" />
+              </div>
+              <h2 className="text-3xl font-bold text-slate-800 mb-4">Share Your Story</h2>
+              <p className="text-slate-600 text-lg max-w-md mx-auto leading-relaxed">
+                Start a conversation and watch as your stories are automatically transformed 
+                into beautifully written blog posts using AI.
               </p>
             </div>
           )}
-          {conversationHistory.map(renderMessageBubble)}
-          <div ref={messagesEndRef} />
+          
+          <div className="space-y-2">
+            {conversationHistory.map(renderMessageBubble)}
+            <div ref={messagesEndRef} />
+          </div>
         </div>
       </main>
       

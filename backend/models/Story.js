@@ -41,7 +41,7 @@ const storySchema = new mongoose.Schema({
     type: String,
     default: ''
   },
-  // New blog fields
+  // Blog fields
   blogTitle: {
     type: String,
     default: ''
@@ -67,14 +67,29 @@ const storySchema = new mongoose.Schema({
   recordingDuration: {
     type: Number,
     default: 0
+  },
+  autoBlogEnabled: {
+    type: Boolean,
+    default: true
+  },
+  blogGeneratedAt: {
+    type: Date,
+    default: null
   }
 }, {
   timestamps: true
 });
 
-// Add index for better query performance
+// Add indexes
 storySchema.index({ storytellerName: 1, createdAt: -1 });
 storySchema.index({ status: 1 });
-storySchema.index({ blogTags: 1 }); // Index for blog tags
+storySchema.index({ blogTags: 1 });
+storySchema.index({ autoBlogEnabled: 1 });
+
+// Virtual for blog excerpt
+storySchema.virtual('blogExcerpt').get(function() {
+  if (!this.blogPost) return '';
+  return this.blogPost.substring(0, 150) + '...';
+});
 
 module.exports = mongoose.model('Story', storySchema);
