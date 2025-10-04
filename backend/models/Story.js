@@ -1,82 +1,66 @@
 const mongoose = require('mongoose');
 
-const conversationMessageSchema = new mongoose.Schema({
-  speaker: {
-    type: String,
-    enum: ['user', 'ai'],
-    required: true
-  },
-  text: {
-    type: String,
-    required: true
-  },
-  timestamp: {
-    type: Date,
-    default: Date.now
-  },
-  isFallback: {
-    type: Boolean,
-    default: false
-  }
-});
-
 const storySchema = new mongoose.Schema({
   storytellerName: {
     type: String,
-    required: true
+    required: true,
+    trim: true
   },
   topic: {
     type: String,
-    required: true,
-    // Updated enum to match the new "Story Modules" in the biographer AI
-    enum: ['childhood', 'school', 'career', 'family', 'wisdom', 'default']
+    default: 'wisdom'
   },
-  interviewMode: {
+  conversationHistory: [{
+    speaker: {
+      type: String,
+      enum: ['user', 'ai'],
+      required: true
+    },
+    text: {
+      type: String,
+      required: true
+    },
+    timestamp: {
+      type: Date,
+      default: Date.now
+    },
+    audioFile: {
+      type: String, // Store filename of audio recording
+      default: null
+    }
+  }],
+  audioRecordings: [{
+    type: String, // Array of audio filenames
+    default: []
+  }],
+  summary: {
     type: String,
-    enum: ['voice', 'phone'],
-    default: 'voice'
-  },
-  phoneNumber: {
-    type: String
-  },
-  recordingDuration: {
-    type: Number,
-    default: 0,
-    min: [0, 'Recording duration cannot be negative']
+    default: ''
   },
   transcript: {
     type: String,
     default: ''
   },
-  // Added field to store the final generated blog post
-  summary: {
-    type: String,
-    default: ''
-  },
-  audioUrl: {
-    type: String
-  },
   status: {
     type: String,
-    enum: ['processing', 'completed', 'failed'],
+    enum: ['processing', 'completed', 'archived'],
     default: 'processing'
   },
-  conversationHistory: [conversationMessageSchema],
-  // Removed obsolete 'extractedEntities' field
-  createdAt: {
-    type: Date,
-    default: Date.now
+  interviewMode: {
+    type: String,
+    enum: ['voice', 'text'],
+    default: 'voice'
   },
-  updatedAt: {
-    type: Date,
-    default: Date.now
+  recordingDuration: {
+    type: Number, // Total recording duration in seconds
+    default: 0
   }
+}, {
+  timestamps: true
 });
 
-// Update timestamp on save
-storySchema.pre('save', function(next) {
-  this.updatedAt = Date.now();
-  next();
-});
+// Add index for better query performance
+storySchema.index({ storytellerName: 1, createdAt: -1 });
+storySchema.index({ status: 1 });
 
 module.exports = mongoose.model('Story', storySchema);
