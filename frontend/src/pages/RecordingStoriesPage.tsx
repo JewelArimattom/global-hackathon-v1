@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { BookOpen, Mic, User, ArrowRight, AlertTriangle, Wifi, Save, Loader2, MessageSquare, Play, Square } from 'lucide-react';
+import { BookOpen, Mic, User, ArrowRight, AlertTriangle, Wifi, Save, Loader2, MessageSquare, Play, Square, FileText } from 'lucide-react';
 
 // Types
 interface ConversationMessage {
@@ -19,6 +19,14 @@ interface AIResponse {
   transcribedText?: string;
 }
 
+interface BlogData {
+  blogTitle: string;
+  blogContent: string;
+  blogTags: string[];
+  success: boolean;
+  message: string;
+}
+
 // --- Main Component ---
 export default function RecordingStoriesPage() {
   const [interviewState, setInterviewState] = useState<'ready' | 'running' | 'saving' | 'error'>('ready');
@@ -31,13 +39,16 @@ export default function RecordingStoriesPage() {
   const [recordingStartTime, setRecordingStartTime] = useState<number | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [recordingDuration, setRecordingDuration] = useState(0);
+  const [blogData, setBlogData] = useState<BlogData | null>(null);
+  const [showBlogPreview, setShowBlogPreview] = useState(false);
+  const [isGeneratingBlog, setIsGeneratingBlog] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const recordingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   
-  // Hardcoded values to replace setup fields
+  // Hardcoded values
   const storytellerName = 'Friend';
   const selectedTopic = 'wisdom';
 
@@ -73,7 +84,6 @@ export default function RecordingStoriesPage() {
       .catch(() => setIsBackendConnected(false));
 
     return () => {
-      // Cleanup function
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
         mediaRecorderRef.current.stop();
       }
@@ -84,7 +94,7 @@ export default function RecordingStoriesPage() {
     };
   }, []);
 
-  // --- API and Voice Recording Functions ---
+  // --- API Functions ---
 
   const startStorySession = async () => {
     try {
@@ -121,7 +131,11 @@ export default function RecordingStoriesPage() {
       });
       if (!response.ok) throw new Error('Failed to save story session');
       const data = await response.json();
-      alert('Story saved successfully!');
+      
+      // Generate blog post after saving
+      await generateBlogPost();
+      
+      alert('Story saved successfully and blog post generated!');
       
       // Reset to start
       setInterviewState('ready');
@@ -136,9 +150,36 @@ export default function RecordingStoriesPage() {
     }
   };
 
+  const generateBlogPost = async () => {
+    if (!currentStoryId) return;
+    
+    setIsGeneratingBlog(true);
+    try {
+      const response = await fetch('http://localhost:5000/api/ai/generate-blog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storyId: currentStoryId }),
+      });
+      
+      if (!response.ok) throw new Error('Failed to generate blog post');
+      
+      const data = await response.json();
+      setBlogData(data);
+      setShowBlogPreview(true);
+      
+    } catch (error) {
+      console.error('Error generating blog post:', error);
+      setErrorMessage('Failed to generate blog post, but story was saved.');
+    } finally {
+      setIsGeneratingBlog(false);
+    }
+  };
+
   const handleBeginInterview = async () => {
     setErrorMessage('');
     setInterviewState('running');
+    setBlogData(null);
+    setShowBlogPreview(false);
 
     try {
       const greeting = await startStorySession();
@@ -147,21 +188,6 @@ export default function RecordingStoriesPage() {
       setErrorMessage('Failed to start interview session. Please try again.');
       setInterviewState('ready');
     }
-  };
-
-  const generateAIResponse = async (userInput: string): Promise<AIResponse> => {
-    setAiStatus('thinking');
-    const response = await fetch('http://localhost:5000/api/ai/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        message: userInput, 
-        storytellerName,
-        storyId: currentStoryId
-      }),
-    });
-    if (!response.ok) throw new Error(`Server error: ${response.status}`);
-    return await response.json();
   };
 
   const sendVoiceMessage = async (audioBlob: Blob): Promise<AIResponse> => {
@@ -199,7 +225,18 @@ export default function RecordingStoriesPage() {
         // The voice-message endpoint already returns the AI response
         aiData = await sendVoiceMessage(new Blob()); // We'll replace this with actual audio blob
       } else {
-        aiData = await generateAIResponse(userInput);
+        // For text messages, use the chat endpoint
+        const response = await fetch('http://localhost:5000/api/ai/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            message: userInput, 
+            storytellerName,
+            storyId: currentStoryId
+          }),
+        });
+        if (!response.ok) throw new Error(`Server error: ${response.status}`);
+        aiData = await response.json();
       }
 
       const aiMessage: ConversationMessage = { 
@@ -265,7 +302,7 @@ export default function RecordingStoriesPage() {
         stream.getTracks().forEach(track => track.stop());
       };
 
-      mediaRecorder.start(1000); // Collect data every second
+      mediaRecorder.start(1000);
       setIsRecording(true);
       setRecordingStartTime(Date.now());
       setErrorMessage('');
@@ -386,6 +423,53 @@ export default function RecordingStoriesPage() {
     );
   };
 
+  const renderBlogPreview = () => {
+    if (!blogData || !showBlogPreview) return null;
+
+    return (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+        <div className="bg-white rounded-lg max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+          <div className="p-6">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-2xl font-bold text-slate-800">Generated Blog Post</h2>
+              <button
+                onClick={() => setShowBlogPreview(false)}
+                className="text-slate-500 hover:text-slate-700"
+              >
+                ✕
+              </button>
+            </div>
+            
+            <div className="mb-6">
+              <h1 className="text-3xl font-bold text-teal-700 mb-4">{blogData.blogTitle}</h1>
+              <div className="flex flex-wrap gap-2 mb-4">
+                {blogData.blogTags.map((tag, index) => (
+                  <span key={index} className="bg-teal-100 text-teal-800 px-3 py-1 rounded-full text-sm">
+                    #{tag}
+                  </span>
+                ))}
+              </div>
+            </div>
+            
+            <div className="prose max-w-none">
+              {blogData.blogContent.split('\n').map((paragraph, index) => (
+                <p key={index} className="mb-4 text-slate-700 leading-relaxed">
+                  {paragraph}
+                </p>
+              ))}
+            </div>
+            
+            <div className="mt-8 pt-6 border-t border-slate-200">
+              <p className="text-sm text-slate-500">
+                This blog post was automatically generated from your conversation with AI Interviewer.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const getStatusText = () => {
     if (aiStatus === 'speaking') return 'Anna is speaking...';
     if (aiStatus === 'thinking') return 'Anna is thinking...';
@@ -440,14 +524,25 @@ export default function RecordingStoriesPage() {
             <p className="text-sm font-medium text-slate-600 h-5">{getStatusText()}</p>
           </div>
           
-          <button
-            onClick={endStorySession}
-            disabled={isSaving || conversationHistory.length < 2}
-            className="flex items-center gap-2 px-5 py-2.5 bg-slate-700 text-white font-semibold rounded-lg hover:bg-slate-800 transition disabled:bg-slate-400"
-          >
-            {isSaving ? <Loader2 className="w-5 h-5 animate-spin" /> : <Save className="w-5 h-5" />}
-            End & Save
-          </button>
+          <div className="flex gap-3">
+            <button
+              onClick={generateBlogPost}
+              disabled={isGeneratingBlog || conversationHistory.length < 2}
+              className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 transition disabled:bg-slate-400"
+            >
+              {isGeneratingBlog ? <Loader2 className="w-5 h-5 animate-spin" /> : <FileText className="w-5 h-5" />}
+              Generate Blog
+            </button>
+            
+            <button
+              onClick={endStorySession}
+              disabled={isSaving || conversationHistory.length < 2}
+              className="flex items-center gap-2 px-5 py-2.5 bg-slate-700 text-white font-semibold rounded-lg hover:bg-slate-800 transition disabled:bg-slate-400"
+            >
+              {isSaving ? <Loader2 className="w-5 h-5 animate-spin" /> : <Save className="w-5 h-5" />}
+              End & Save
+            </button>
+          </div>
         </div>
         
         {errorMessage && (
@@ -494,7 +589,8 @@ export default function RecordingStoriesPage() {
               <MessageSquare className="w-16 h-16 mx-auto text-slate-300" />
               <h2 className="mt-4 text-2xl font-semibold text-slate-700">Ready to Listen</h2>
               <p className="mt-2 text-slate-500">
-                Click "Start Conversation" below to begin sharing your story. Use the microphone button to record your voice.
+                Click "Start Conversation" below to begin sharing your story. 
+                Your conversation will be automatically converted into a blog post!
               </p>
             </div>
           )}
@@ -506,6 +602,8 @@ export default function RecordingStoriesPage() {
       <footer className="flex-shrink-0">
         {renderFooter()}
       </footer>
+
+      {renderBlogPreview()}
     </div>
   );
 }

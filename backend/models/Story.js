@@ -25,12 +25,12 @@ const storySchema = new mongoose.Schema({
       default: Date.now
     },
     audioFile: {
-      type: String, // Store filename of audio recording
+      type: String,
       default: null
     }
   }],
   audioRecordings: [{
-    type: String, // Array of audio filenames
+    type: String,
     default: []
   }],
   summary: {
@@ -41,6 +41,19 @@ const storySchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  // New blog fields
+  blogTitle: {
+    type: String,
+    default: ''
+  },
+  blogPost: {
+    type: String,
+    default: ''
+  },
+  blogTags: [{
+    type: String,
+    default: []
+  }],
   status: {
     type: String,
     enum: ['processing', 'completed', 'archived'],
@@ -52,7 +65,7 @@ const storySchema = new mongoose.Schema({
     default: 'voice'
   },
   recordingDuration: {
-    type: Number, // Total recording duration in seconds
+    type: Number,
     default: 0
   }
 }, {
@@ -62,5 +75,6 @@ const storySchema = new mongoose.Schema({
 // Add index for better query performance
 storySchema.index({ storytellerName: 1, createdAt: -1 });
 storySchema.index({ status: 1 });
+storySchema.index({ blogTags: 1 }); // Index for blog tags
 
 module.exports = mongoose.model('Story', storySchema);

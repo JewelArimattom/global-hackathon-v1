@@ -80,9 +80,12 @@ router.post('/start-session', async (req, res) => {
       storytellerName,
       topic: topic || 'wisdom', 
       conversationHistory: [{ speaker: 'ai', text: greeting, timestamp: new Date() }],
-      audioRecordings: [], // Initialize empty audio recordings array
+      audioRecordings: [],
       status: 'processing',
-      interviewMode: interviewMode || 'voice'
+      interviewMode: interviewMode || 'voice',
+      blogPost: '',
+      blogTitle: '',
+      blogTags: []
     });
     await newStory.save();
     console.log(`✅ New listener session started for ${storytellerName}. ID: ${newStory._id}`);
@@ -143,7 +146,7 @@ router.post('/chat', async (req, res) => {
   }
 });
 
-// New endpoint for voice message processing
+// Voice message processing endpoint
 router.post('/voice-message', upload.single('audio'), async (req, res) => {
   const { storyId, storytellerName } = req.body;
   
@@ -182,7 +185,7 @@ router.post('/voice-message', upload.single('audio'), async (req, res) => {
       await updateStoryWithAudio(storyId, transcribedText, friendlyResponse, req.file.filename);
     }
 
-    // Step 4: Clean up audio file (optional - you might want to keep it)
+    // Step 4: Clean up audio file
     fs.unlink(req.file.path, (err) => {
       if (err) console.error('❌ Failed to delete audio file:', err);
     });
@@ -213,23 +216,85 @@ router.post('/voice-message', upload.single('audio'), async (req, res) => {
   }
 });
 
+// New endpoint to generate blog post from conversation
+router.post('/generate-blog', async (req, res) => {
+  const { storyId } = req.body;
+  
+  if (!storyId || !Story) {
+    return res.status(400).json({ error: 'Story ID is required' });
+  }
+
+  try {
+    const story = await Story.findById(storyId);
+    if (!story) {
+      return res.status(404).json({ error: 'Story not found' });
+    }
+
+    console.log('📝 Generating blog post for story:', storyId);
+    
+    // Generate blog post from conversation
+    const { blogTitle, blogContent, blogTags } = await generateBlogPost(story.conversationHistory, story.storytellerName);
+    
+    // Update story with generated blog
+    story.blogTitle = blogTitle;
+    story.blogPost = blogContent;
+    story.blogTags = blogTags;
+    story.status = 'completed';
+    await story.save();
+
+    console.log('✅ Blog post generated successfully for story:', storyId);
+
+    res.json({
+      success: true,
+      blogTitle,
+      blogContent,
+      blogTags,
+      message: 'Blog post generated successfully'
+    });
+
+  } catch (error) {
+    console.error('🔴 Error generating blog post:', error);
+    res.status(500).json({
+      error: 'Failed to generate blog post',
+      message: 'Could not generate blog post from conversation'
+    });
+  }
+});
+
 router.post('/end-session', async (req, res) => {
   const { storyId, recordingDuration } = req.body;
   try {
     const story = await Story.findById(storyId);
     if (!story) return res.status(404).json({ error: 'Story not found' });
     
+    // Generate final summary
     const finalSummary = await generateFinalSummary(story.conversationHistory, story.storytellerName);
     story.summary = finalSummary;
     story.transcript = story.conversationHistory.map(msg => `${msg.speaker}: ${msg.text}`).join('\n');
     story.status = 'completed';
     story.recordingDuration = recordingDuration || 0;
+    
+    // Generate blog post automatically when session ends
+    try {
+      const { blogTitle, blogContent, blogTags } = await generateBlogPost(story.conversationHistory, story.storytellerName);
+      story.blogTitle = blogTitle;
+      story.blogPost = blogContent;
+      story.blogTags = blogTags;
+      console.log('✅ Blog post generated automatically for story:', storyId);
+    } catch (blogError) {
+      console.error('❌ Failed to generate blog post:', blogError);
+      // Continue without blog post - don't fail the entire request
+    }
+    
     await story.save();
-    console.log(`✅ Story summary generated and saved for story ID: ${storyId}`);
+    
+    console.log(`✅ Story session completed and saved for story ID: ${storyId}`);
     res.json({
       message: 'Story session completed and saved!',
       storyId: story._id,
       summary: finalSummary,
+      blogTitle: story.blogTitle,
+      blogGenerated: !!story.blogPost
     });
   } catch (error) {
     console.error('❌ Error ending story session:', error);
@@ -267,12 +332,12 @@ async function updateStoryWithAudio(storyId, userMessage, aiResponse, audioFilen
               speaker: 'user', 
               text: userMessage, 
               timestamp: new Date(),
-              audioFile: audioFilename // Store reference to audio file
+              audioFile: audioFilename
             },
             { speaker: 'ai', text: aiResponse, timestamp: new Date() }
           ]
         },
-        audioRecordings: audioFilename // Also store in separate audio recordings array
+        audioRecordings: audioFilename
       }
     });
     console.log(`✅ Updated story ${storyId} with voice message and audio reference`);
@@ -282,75 +347,92 @@ async function updateStoryWithAudio(storyId, userMessage, aiResponse, audioFilen
 }
 
 async function convertSpeechToText(audioFilePath) {
-  // For production, you would use a speech-to-text service like:
-  // - Google Speech-to-Text
-  // - AWS Transcribe
-  // - Azure Speech Services
-  // - Mozilla DeepSpeech
-  
-  // Since we're using Google Gemini, let's use Google Speech-to-Text
-  // For now, I'll provide a mock implementation
-  // You'll need to implement the actual API call
-  
+  // Mock implementation - replace with actual Google Speech-to-Text
   return await mockSpeechToText(audioFilePath);
 }
 
 async function mockSpeechToText(audioFilePath) {
-  // This is a mock implementation
-  // In production, replace this with actual Google Speech-to-Text API
-  
   const mockResponses = [
-    "I was thinking about my childhood and all the memories I have.",
-    "The other day I went for a walk in the park and saw something amazing.",
-    "I remember when I first learned to ride a bicycle.",
-    "My grandmother used to tell me stories about her life.",
-    "I've been thinking a lot about the future lately.",
-    "There's this place I used to visit when I was younger.",
-    "I had the most interesting dream last night.",
-    "I want to share something that's been on my mind.",
-    "Life has been quite a journey for me so far.",
-    "I remember the first time I saw the ocean."
+    "I was thinking about my childhood and all the memories I have growing up in a small town.",
+    "The other day I went for a walk in the park and saw the most beautiful sunset I've ever seen.",
+    "I remember when I first learned to ride a bicycle - it was such a freeing experience.",
+    "My grandmother used to tell me stories about her life during the war, and they've always stayed with me.",
+    "I've been thinking a lot about the future lately and what I want to accomplish in my career.",
+    "There's this little coffee shop I used to visit when I was in college that had the best atmosphere.",
+    "I had the most interesting dream last night about traveling to a foreign country and meeting new people.",
+    "I want to share something that's been on my mind about the importance of community and connection.",
+    "Life has been quite a journey for me so far, with many ups and downs but valuable lessons learned.",
+    "I remember the first time I saw the ocean - the vastness and power of it took my breath away."
   ];
   
-  // Simulate API delay
   await new Promise(resolve => setTimeout(resolve, 1000));
-  
-  // Return random mock response
   return mockResponses[Math.floor(Math.random() * mockResponses.length)];
 }
 
-// For production - Google Speech-to-Text implementation
-async function googleSpeechToText(audioFilePath) {
-  // You'll need to install: npm install @google-cloud/speech
-  /*
-  const speech = require('@google-cloud/speech');
-  const client = new speech.SpeechClient();
-  
-  const audio = {
-    content: fs.readFileSync(audioFilePath).toString('base64'),
-  };
-  
-  const config = {
-    encoding: 'WEBM_OPUS',
-    sampleRateHertz: 48000,
-    languageCode: 'en-US',
-  };
-  
-  const request = {
-    audio: audio,
-    config: config,
-  };
-  
-  const [response] = await client.recognize(request);
-  const transcription = response.results
-    .map(result => result.alternatives[0].transcript)
-    .join('\n');
+async function generateBlogPost(conversationHistory, storytellerName) {
+  if (!isApiKeyAvailable) {
+    return {
+      blogTitle: "Test Blog Post",
+      blogContent: "This is a test blog post. In production, this would be generated from your conversation.",
+      blogTags: ["test", "conversation", "story"]
+    };
+  }
+
+  const userMessages = conversationHistory
+    .filter(msg => msg.speaker === 'user')
+    .map(msg => msg.text)
+    .join('\n\n');
+
+  const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro-latest" });
+
+  const prompt = `
+    You are a professional blog writer. Based on the following conversation with ${storytellerName}, create a compelling blog post.
+
+    CONVERSATION TRANSCRIPT:
+    ${userMessages}
+
+    Please generate:
+    1. A catchy, engaging title (max 60 characters)
+    2. A well-structured blog post (500-800 words) that captures the essence of the story
+    3. 3-5 relevant tags
+
+    Format your response as JSON exactly like this:
+    {
+      "blogTitle": "The Title Here",
+      "blogContent": "Full blog post content here...",
+      "blogTags": ["tag1", "tag2", "tag3"]
+    }
+
+    Make the blog post:
+    - Engaging and personal
+    - Well-structured with paragraphs
+    - Capture the emotional essence of the story
+    - Suitable for a general audience
+    - Include relevant insights or lessons learned
+  `;
+
+  try {
+    const result = await model.generateContent(prompt);
+    const responseText = result.response.text().trim();
     
-  return transcription;
-  */
-  
-  // Placeholder for actual implementation
-  return "Google Speech-to-Text would transcribe: " + audioFilePath;
+    // Extract JSON from response
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const blogData = JSON.parse(jsonMatch[0]);
+      return blogData;
+    } else {
+      throw new Error('Invalid response format from AI');
+    }
+  } catch (error) {
+    console.error('🔴 Error generating blog post:', error);
+    
+    // Fallback blog post
+    return {
+      blogTitle: `Conversation with ${storytellerName}`,
+      blogContent: `This blog post is based on a conversation with ${storytellerName}. The conversation covered various personal stories and experiences that would make for an engaging read once processed.`,
+      blogTags: ["conversation", "personal-story", "interview"]
+    };
+  }
 }
 
 async function generateAcknowledgement(userMessage, history, storytellerName) {
@@ -391,7 +473,7 @@ async function generateFinalSummary(conversationHistory, storytellerName) {
   const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro-latest" });
   
   const prompt = `
-    You are a helpful assistant. Please read the following conversation with ${storytellerName} and create a concise, bullet-pointed summary of the main topics and memories they shared.
+    Create a concise, bullet-pointed summary of the main topics and memories shared by ${storytellerName}.
     
     **Transcript:**
     ---
