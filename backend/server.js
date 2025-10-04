@@ -1,7 +1,7 @@
 const express = require('express');
 const dotenv = require('dotenv');
 const path = require('path');
-const connectDB = require('./config/database');
+const connectDB = require('./database'); 
 const corsMiddleware = require('./middleware/cors');
 
 // Load env vars
