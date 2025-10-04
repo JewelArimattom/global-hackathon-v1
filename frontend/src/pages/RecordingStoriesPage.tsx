@@ -28,7 +28,7 @@ interface AIResponse {
   isFallback?: boolean;
 }
 
-// --- NEW --- AI Character Component
+// --- AI Character Component ---
 const AiCharacter = ({ status }: { status: 'idle' | 'thinking' | 'speaking' }) => {
   const getStatusClasses = () => {
     switch (status) {
@@ -44,7 +44,6 @@ const AiCharacter = ({ status }: { status: 'idle' | 'thinking' | 'speaking' }) =
   return (
     <div className="relative flex flex-col items-center">
       <img
-        // Replace this with a real image of your AI character "Anna"
         src="https://i.pravatar.cc/150?u=anna-ai"
         alt="AI Interviewer Anna"
         className={`w-32 h-32 rounded-full object-cover transition-all duration-300 ${getStatusClasses()}`}
@@ -62,40 +61,31 @@ const AiCharacter = ({ status }: { status: 'idle' | 'thinking' | 'speaking' }) =
 export default function RecordingStoriesPage() {
   const [step, setStep] = useState(1);
   const [isRecording, setIsRecording] = useState(false);
-  const [recordingTime, setRecordingTime] = useState(0);
   const [storytellerName, setStorytellerName] = useState('');
   const [selectedTopic, setSelectedTopic] = useState('');
-  const [transcript, setTranscript] = useState('');
-  const [isProcessing, setIsProcessing] = useState(false);
   const [conversationHistory, setConversationHistory] = useState<ConversationMessage[]>([]);
-  const [isConversationActive, setIsConversationActive] = useState(true);
   const [aiStatus, setAiStatus] = useState<'idle' | 'thinking' | 'speaking'>('idle');
   const [interviewMode, setInterviewMode] = useState<'voice' | 'phone'>('voice');
-  
-  // --- NEW STATES FOR VAPI PHONE CALL ---
   const [phoneNumber, setPhoneNumber] = useState('');
   const [callStatus, setCallStatus] = useState<'idle' | 'calling' | 'active' | 'completed' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState('');
 
-
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-  const recognitionRef = useRef<any>(null);
+  const recognitionRef = useRef<any>(null); // For Speech Recognition
 
   const topics = [
-    { id: 'childhood', title: 'Childhood Memories', icon: '🎈', description: 'Early years and growing up' },
-    { id: 'family', title: 'Family Stories', icon: '👨‍👩‍👧‍👦', description: 'Family traditions and relationships' },
-    { id: 'career', title: 'Work & Career', icon: '💼', description: 'Professional journey and achievements' },
-    { id: 'love', title: 'Love & Marriage', icon: '💕', description: 'Romantic memories and relationships' },
-    { id: 'wisdom', title: 'Life Lessons', icon: '💡', description: 'Wisdom and advice for future generations' },
-    { id: 'travel', title: 'Adventures & Travel', icon: '✈️', description: 'Travels and memorable experiences' },
+    { id: 'childhood', title: 'Childhood Memories', icon: '🎈' },
+    { id: 'family', title: 'Family Stories', icon: '👨‍👩‍👧‍👦' },
+    { id: 'career', title: 'Work & Career', icon: '💼' },
+    { id: 'love', title: 'Love & Marriage', icon: '💕' },
+    { id: 'wisdom', title: 'Life Lessons', icon: '💡' },
+    { id: 'travel', title: 'Adventures & Travel', icon: '✈️' },
   ];
 
-  // --- NEW --- Master function to start either voice or phone interview
+  // --- Main Action Handler ---
   const handleStartInterview = async () => {
     setErrorMessage('');
     if (!storytellerName || !selectedTopic) {
-      setErrorMessage('Please provide the storyteller\'s name and select a topic.');
+      setErrorMessage("Please provide the storyteller's name and select a topic.");
       return;
     }
 
@@ -107,74 +97,141 @@ export default function RecordingStoriesPage() {
       await startPhoneInterview();
     } else {
       setStep(2);
-      await startRecording();
+      // For voice interview, we'll start listening after the intro message
     }
   };
 
-  // --- NEW --- Function to initiate a VAPI phone call
+  // --- Phone Interview (VAPI) Logic ---
   const startPhoneInterview = async () => {
     setCallStatus('calling');
     setStep(2);
     try {
       const response = await fetch('http://localhost:5000/api/vapi/start-call', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          storytellerName,
-          topic: selectedTopic,
-          phoneNumber,
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storytellerName, topic: selectedTopic, phoneNumber }),
       });
 
       if (!response.ok) {
         const errorData = await response.json();
         throw new Error(errorData.error || 'Failed to initiate the call.');
       }
-      
-      const data = await response.json();
-      console.log('Call initiated:', data);
       setCallStatus('active');
-
     } catch (error: any) {
-      console.error('Phone interview error:', error);
       setErrorMessage(error.message);
       setCallStatus('error');
     }
   };
 
+  // --- Voice Interview (Gemini) Logic ---
 
+  // Calls our new AI backend
   const generateAIResponse = async (userInput: string, history: ConversationMessage[]): Promise<AIResponse> => {
-    // ... (existing function remains the same)
+    setAiStatus('thinking');
+    const response = await fetch('http://localhost:5000/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            message: userInput,
+            topic: selectedTopic,
+            storytellerName: storytellerName,
+            conversationHistory: history,
+        }),
+    });
+
+    if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || 'Failed to get AI response');
+    }
+
+    return response.json();
   };
 
+  // Processes user speech and gets AI reply
   const processUserResponse = async (userInput: string) => {
-    // ... (existing function remains the same)
+    const userMessage: ConversationMessage = { speaker: 'user', text: userInput, timestamp: new Date() };
+    const newHistory = [...conversationHistory, userMessage];
+    setConversationHistory(newHistory);
+
+    try {
+        const aiData = await generateAIResponse(userInput, newHistory);
+        const aiMessage: ConversationMessage = { speaker: 'ai', text: aiData.response, timestamp: new Date(), isFallback: aiData.isFallback };
+        setConversationHistory(prev => [...prev, aiMessage]);
+        await speakText(aiData.response);
+    } catch (error) {
+        console.error("Error processing user response:", error);
+        const errorMessage: ConversationMessage = { speaker: 'ai', text: "I'm having trouble connecting. Let's try that again.", timestamp: new Date(), isFallback: true };
+        setConversationHistory(prev => [...prev, errorMessage]);
+        await speakText(errorMessage.text);
+    } finally {
+        if (recognitionRef.current) recognitionRef.current.start(); // Start listening again
+    }
   };
 
-  const shouldEndConversation = (text: string): boolean => {
-    // ... (existing function remains the same)
-  };
-
-  const endConversationGracefully = async () => {
-    // ... (existing function remains the same)
-  };
-
+  // Uses browser's built-in speech synthesis
   const speakText = (text: string): Promise<void> => {
-    // ... (existing function remains the same)
+    return new Promise((resolve) => {
+        setAiStatus('speaking');
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.onend = () => {
+            setAiStatus('idle');
+            resolve();
+        };
+        speechSynthesis.speak(utterance);
+    });
   };
-  
-  const startRecording = async () => {
-    // ... (existing function remains the same)
-  };
-  
+
+  // Sets up the browser's speech recognition
   const initializeSpeechRecognition = () => {
-    // ... (existing function remains the same)
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      console.error("Speech Recognition not supported in this browser.");
+      return;
+    }
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = 'en-US';
+
+    recognition.onresult = (event) => {
+      const last = event.results.length - 1;
+      const spokenText = event.results[last][0].transcript;
+      processUserResponse(spokenText);
+    };
+
+    recognition.onerror = (event) => {
+        console.error("Speech recognition error", event.error);
+        if (event.error === 'no-speech') {
+            recognition.start(); // If no speech, just start listening again
+        }
+    };
+    
+    recognitionRef.current = recognition;
   };
 
+  // Effect to set up and start the voice interview
+  useEffect(() => {
+    if (step === 2 && interviewMode === 'voice') {
+      initializeSpeechRecognition();
+      const introMessage = `Hello ${storytellerName}. Thank you for sharing your memories about ${selectedTopic}. I'm ready to listen when you are.`;
+      const firstMessage: ConversationMessage = { speaker: 'ai', text: introMessage, timestamp: new Date() };
+      setConversationHistory([firstMessage]);
+      speakText(introMessage).then(() => {
+        if (recognitionRef.current) {
+          recognitionRef.current.start();
+          setIsRecording(true);
+        }
+      });
+    }
 
-  // --- UI Components for each step/mode ---
+    return () => { // Cleanup
+      if (recognitionRef.current) recognitionRef.current.stop();
+      speechSynthesis.cancel();
+    };
+  }, [step, interviewMode]);
+
+
+  // --- UI RENDER FUNCTIONS ---
 
   const renderSetupStep = () => (
     <div className="container mx-auto px-6 py-12">
@@ -182,85 +239,40 @@ export default function RecordingStoriesPage() {
         <h1 className="text-4xl font-bold text-gray-800 mb-2">Begin a New Story</h1>
         <p className="text-lg text-gray-600">Choose the interview method and provide some basic details to get started.</p>
       </div>
-
       <div className="max-w-2xl mx-auto mt-10 p-8 bg-white rounded-xl shadow-lg border border-gray-200">
         <div className="mb-6">
           <label className="block text-sm font-semibold text-gray-700 mb-2">1. Choose Interview Method</label>
           <div className="flex justify-center gap-4 bg-gray-100 p-2 rounded-lg">
-            <button
-              onClick={() => setInterviewMode('voice')}
-              className={`w-full flex items-center justify-center gap-2 px-4 py-2 rounded-md transition ${
-                interviewMode === 'voice' ? 'bg-amber-600 text-white shadow' : 'text-gray-700 hover:bg-gray-200'
-              }`}
-            >
-              <MessageCircle className="w-5 h-5" /> Voice Interview
-            </button>
-            <button
-              onClick={() => setInterviewMode('phone')}
-              className={`w-full flex items-center justify-center gap-2 px-4 py-2 rounded-md transition ${
-                interviewMode === 'phone' ? 'bg-amber-600 text-white shadow' : 'text-gray-700 hover:bg-gray-200'
-              }`}
-            >
-              <Phone className="w-5 h-5" /> Phone Interview
-            </button>
+            <button onClick={() => setInterviewMode('voice')} className={`w-full flex items-center justify-center gap-2 px-4 py-2 rounded-md transition ${interviewMode === 'voice' ? 'bg-amber-600 text-white shadow' : 'text-gray-700 hover:bg-gray-200'}`}><MessageCircle className="w-5 h-5" /> Voice Interview</button>
+            <button onClick={() => setInterviewMode('phone')} className={`w-full flex items-center justify-center gap-2 px-4 py-2 rounded-md transition ${interviewMode === 'phone' ? 'bg-amber-600 text-white shadow' : 'text-gray-700 hover:bg-gray-200'}`}><Phone className="w-5 h-5" /> Phone Interview</button>
           </div>
         </div>
-        
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
           <div>
             <label htmlFor="storytellerName" className="block text-sm font-semibold text-gray-700 mb-2">2. Storyteller's Name</label>
-            <input
-              type="text"
-              id="storytellerName"
-              value={storytellerName}
-              onChange={(e) => setStorytellerName(e.target.value)}
-              placeholder="e.g., Jane Doe"
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500"
-            />
+            <input type="text" id="storytellerName" value={storytellerName} onChange={(e) => setStorytellerName(e.target.value)} placeholder="e.g., Jane Doe" className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
           </div>
           {interviewMode === 'phone' && (
             <div>
               <label htmlFor="phoneNumber" className="block text-sm font-semibold text-gray-700 mb-2">3. Phone Number</label>
-              <input
-                type="tel"
-                id="phoneNumber"
-                value={phoneNumber}
-                onChange={(e) => setPhoneNumber(e.target.value)}
-                placeholder="+1 (555) 123-4567"
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500"
-              />
+              <input type="tel" id="phoneNumber" value={phoneNumber} onChange={(e) => setPhoneNumber(e.target.value)} placeholder="+1 (555) 123-4567" className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500" />
             </div>
           )}
         </div>
-
         <div>
           <label className="block text-sm font-semibold text-gray-700 mb-2">{interviewMode === 'phone' ? '4.' : '3.'} Select a Topic</label>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             {topics.map(topic => (
-              <button
-                key={topic.id}
-                onClick={() => setSelectedTopic(topic.id)}
-                className={`p-4 border rounded-lg text-center transition ${
-                  selectedTopic === topic.id ? 'bg-amber-100 border-amber-500 ring-2 ring-amber-500' : 'bg-white border-gray-200 hover:border-amber-400'
-                }`}
-              >
+              <button key={topic.id} onClick={() => setSelectedTopic(topic.id)} className={`p-4 border rounded-lg text-center transition ${selectedTopic === topic.id ? 'bg-amber-100 border-amber-500 ring-2 ring-amber-500' : 'bg-white border-gray-200 hover:border-amber-400'}`}>
                 <span className="text-3xl">{topic.icon}</span>
                 <p className="font-semibold mt-2 text-sm text-gray-800">{topic.title}</p>
               </button>
             ))}
           </div>
         </div>
-
         {errorMessage && <p className="text-center text-red-600 mt-4">{errorMessage}</p>}
-        
         <div className="mt-8">
-          <button
-            onClick={handleStartInterview}
-            disabled={!storytellerName || !selectedTopic || (interviewMode === 'phone' && !phoneNumber)}
-            className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-amber-600 text-white font-bold rounded-lg hover:bg-amber-700 transition disabled:bg-gray-400"
-          >
-            Start Interview <ArrowRight className="w-5 h-5" />
-          </button>
+          <button onClick={handleStartInterview} disabled={!storytellerName || !selectedTopic || (interviewMode === 'phone' && !phoneNumber)} className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-amber-600 text-white font-bold rounded-lg hover:bg-amber-700 transition disabled:bg-gray-400">Start Interview <ArrowRight className="w-5 h-5" /></button>
         </div>
       </div>
     </div>
@@ -277,20 +289,13 @@ export default function RecordingStoriesPage() {
           {conversationHistory.map((message, index) => (
              <div key={index} className={`flex items-end gap-2 ${message.speaker === 'user' ? 'justify-end' : 'justify-start'}`}>
                 {message.speaker === 'ai' && <img src="https://i.pravatar.cc/150?u=anna-ai" className="w-8 h-8 rounded-full" />}
-                <div
-                    className={`inline-block px-4 py-3 rounded-lg max-w-md ${
-                        message.speaker === 'ai'
-                        ? 'bg-blue-100 text-gray-800 rounded-bl-none'
-                        : 'bg-amber-100 text-gray-800 rounded-br-none'
-                    }`}
-                >
+                <div className={`inline-block px-4 py-3 rounded-lg max-w-md ${message.speaker === 'ai' ? 'bg-blue-100 text-gray-800 rounded-bl-none' : 'bg-amber-100 text-gray-800 rounded-br-none'}`}>
                     <p className="text-sm">{message.text}</p>
                 </div>
                 {message.speaker === 'user' && <User className="w-8 h-8 rounded-full p-1 bg-gray-200 text-gray-600" />}
             </div>
           ))}
         </div>
-        {/* You can add control buttons here if needed */}
       </div>
     </div>
   );
@@ -298,54 +303,21 @@ export default function RecordingStoriesPage() {
   const renderPhoneInterview = () => (
     <div className="container mx-auto px-6 py-12 text-center">
       <div className="max-w-md mx-auto p-8 bg-white rounded-xl shadow-lg border border-gray-200">
-        {callStatus === 'calling' && (
-          <>
-            <Phone className="w-16 h-16 text-blue-500 mx-auto animate-pulse" />
-            <h2 className="text-2xl font-bold mt-4">Calling...</h2>
-            <p className="text-gray-600 mt-2">We are connecting with {storytellerName} at {phoneNumber}.</p>
-          </>
-        )}
-        {callStatus === 'active' && (
-          <>
-            <div className="relative w-16 h-16 mx-auto">
-              <Mic className="w-16 h-16 text-green-500" />
-              <div className="absolute inset-0 rounded-full border-4 border-green-500 animate-ping"></div>
-            </div>
-            <h2 className="text-2xl font-bold mt-4">Interview in Progress</h2>
-            <p className="text-gray-600 mt-2">{storytellerName} is now sharing their stories. The conversation is being recorded.</p>
-          </>
-        )}
-        {callStatus === 'completed' && (
-          <>
-            <CheckCircle2 className="w-16 h-16 text-green-500 mx-auto" />
-            <h2 className="text-2xl font-bold mt-4">Call Completed</h2>
-            <p className="text-gray-600 mt-2">The interview with {storytellerName} has finished. The story is being saved.</p>
-          </>
-        )}
-        {callStatus === 'error' && (
-          <>
-            <WifiOff className="w-16 h-16 text-red-500 mx-auto" />
-            <h2 className="text-2xl font-bold mt-4">Connection Failed</h2>
-            <p className="text-gray-600 mt-2">{errorMessage}</p>
-            <button onClick={() => { setStep(1); setCallStatus('idle'); }} className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg">Try Again</button>
-          </>
-        )}
+        {callStatus === 'calling' && (<><Phone className="w-16 h-16 text-blue-500 mx-auto animate-pulse" /><h2 className="text-2xl font-bold mt-4">Calling...</h2><p className="text-gray-600 mt-2">We are connecting with {storytellerName} at {phoneNumber}.</p></>)}
+        {callStatus === 'active' && (<><div className="relative w-16 h-16 mx-auto"><Mic className="w-16 h-16 text-green-500" /><div className="absolute inset-0 rounded-full border-4 border-green-500 animate-ping"></div></div><h2 className="text-2xl font-bold mt-4">Interview in Progress</h2><p className="text-gray-600 mt-2">{storytellerName} is now sharing their stories. The conversation is being recorded.</p></>)}
+        {callStatus === 'completed' && (<><CheckCircle2 className="w-16 h-16 text-green-500 mx-auto" /><h2 className="text-2xl font-bold mt-4">Call Completed</h2><p className="text-gray-600 mt-2">The interview with {storytellerName} has finished.</p></>)}
+        {callStatus === 'error' && (<><WifiOff className="w-16 h-16 text-red-500 mx-auto" /><h2 className="text-2xl font-bold mt-4">Connection Failed</h2><p className="text-gray-600 mt-2">{errorMessage}</p><button onClick={() => { setStep(1); setCallStatus('idle'); }} className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg">Try Again</button></>)}
       </div>
     </div>
   );
-
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-amber-50 to-white">
       <nav className="bg-white border-b border-gray-200 shadow-sm">
         <div className="container mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <BookOpen className="w-8 h-8 text-amber-600" />
-            <span className="text-2xl font-semibold text-gray-800">Memory Keeper Pro</span>
-          </div>
+          <div className="flex items-center gap-2"><BookOpen className="w-8 h-8 text-amber-600" /><span className="text-2xl font-semibold text-gray-800">Memory Keeper Pro</span></div>
         </div>
       </nav>
-
       <main>
         {step === 1 && renderSetupStep()}
         {step === 2 && interviewMode === 'voice' && renderVoiceInterview()}
