@@ -43,8 +43,7 @@ export default function RecordingStoriesPage() {
   const [isGeneratingBlog, setIsGeneratingBlog] = useState(false);
   const [autoBlogEnabled, setAutoBlogEnabled] = useState(true);
 
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
+  const speechRecognitionRef = useRef<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const recordingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   
@@ -153,6 +152,7 @@ export default function RecordingStoriesPage() {
       setCurrentStoryId(null);
       setRecordingDuration(0);
       setRecordingStartTime(null);
+      setBlogData(null);
     } catch (error) {
       setErrorMessage('Failed to save story. Please try again.');
     } finally {
@@ -194,27 +194,39 @@ export default function RecordingStoriesPage() {
     try {
       const greeting = await startStorySession();
       await speakText(greeting);
+      // Start speech recognition after greeting
+      initializeSpeechRecognition();
     } catch (error) {
       setErrorMessage('Failed to start interview session. Please try again.');
       setInterviewState('ready');
     }
   };
 
-  const processVoiceMessage = async (audioBlob: Blob) => {
+  const processVoiceMessage = async (message: string) => {
     try {
-      const formData = new FormData();
-      formData.append('audio', audioBlob, 'recording.webm');
-      formData.append('storyId', currentStoryId || '');
-      formData.append('storytellerName', storytellerName);
-
+      console.log('🎤 Sending voice message to backend:', message);
+      
       const response = await fetch('http://localhost:5000/api/ai/voice-message', {
         method: 'POST',
-        body: formData,
+        headers: { 
+          'Content-Type': 'application/json' 
+        },
+        body: JSON.stringify({
+          message: message,
+          storyId: currentStoryId,
+          storytellerName: storytellerName
+        }),
       });
 
-      if (!response.ok) throw new Error('Failed to process voice message');
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('❌ Server error:', errorData);
+        throw new Error(errorData.error || 'Failed to process voice message');
+      }
+      
       return await response.json();
     } catch (error) {
+      console.error('❌ Voice message processing error:', error);
       throw error;
     }
   };
@@ -240,124 +252,130 @@ export default function RecordingStoriesPage() {
     });
   };
 
-  // --- Voice Recording Functions ---
+  // --- Speech Recognition Functions ---
 
-  const startRecording = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          sampleRate: 48000,
-          channelCount: 1
-        } 
-      });
+  const initializeSpeechRecognition = () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    
+    if (!SpeechRecognition) {
+      setErrorMessage("Speech Recognition is not supported in this browser. Please use Chrome or Edge.");
+      return;
+    }
 
-      audioChunksRef.current = [];
-      
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'audio/webm;codecs=opus'
-      });
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
 
-      mediaRecorderRef.current = mediaRecorder;
-
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
-      };
-
-      mediaRecorder.onstop = async () => {
-        await processRecording();
-        stream.getTracks().forEach(track => track.stop());
-      };
-
-      mediaRecorder.start(500); // Collect data every 500ms for better responsiveness
+    recognition.onstart = () => {
+      console.log('🎤 Speech recognition started');
       setIsRecording(true);
       setRecordingStartTime(Date.now());
       setErrorMessage('');
+    };
 
-    } catch (error) {
-      console.error('Error starting recording:', error);
-      setErrorMessage('Microphone access denied. Please allow microphone permissions.');
-    }
-  };
+    recognition.onresult = async (event: any) => {
+      const transcript = Array.from(event.results)
+        .map((result: any) => result[0].transcript)
+        .join('');
 
-  const stopRecording = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
-    }
-  };
-
-  const processRecording = async () => {
-    try {
-      const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-      
-      // Show temporary processing message
-      const tempMessage: ConversationMessage = { 
-        speaker: 'user', 
-        text: '🎤 Converting speech to text...', 
-        timestamp: new Date(),
-        isVoice: true 
-      };
-      setConversationHistory(prev => [...prev, tempMessage]);
-
-      // Process voice message
-      const data = await processVoiceMessage(audioBlob);
-
-      // Replace temporary message with actual transcription
-      setConversationHistory(prev => {
-        const newHistory = prev.filter(msg => msg.text !== '🎤 Converting speech to text...');
-        const userMessage: ConversationMessage = { 
-          speaker: 'user', 
-          text: data.transcribedText, 
-          timestamp: new Date(),
-          isVoice: true 
-        };
-        const aiMessage: ConversationMessage = { 
-          speaker: 'ai', 
-          text: data.response, 
-          timestamp: new Date() 
-        };
-        return [...newHistory, userMessage, aiMessage];
-      });
-
-      // Speak AI response
-      await speakText(data.response);
-
-      // Auto-generate blog after sufficient content
-      const userMessages = conversationHistory.filter(msg => msg.speaker === 'user').length + 1;
-      if (userMessages >= 2 && autoBlogEnabled && !blogData) {
-        setTimeout(() => {
-          generateBlogPost();
-        }, 2000);
+      // Only process final results
+      const finalResult = event.results[event.results.length - 1];
+      if (finalResult.isFinal) {
+        const finalTranscript = finalResult[0].transcript.trim();
+        if (finalTranscript.length > 0) {
+          console.log('🎤 Final transcript:', finalTranscript);
+          
+          try {
+            // Add user message immediately to UI
+            const userMessage: ConversationMessage = { 
+              speaker: 'user', 
+              text: finalTranscript, 
+              timestamp: new Date(),
+              isVoice: true 
+            };
+            setConversationHistory(prev => [...prev, userMessage]);
+            
+            // Process with backend
+            setAiStatus('thinking');
+            const data = await processVoiceMessage(finalTranscript);
+            
+            // Add AI response to UI
+            const aiMessage: ConversationMessage = { 
+              speaker: 'ai', 
+              text: data.response, 
+              timestamp: new Date() 
+            };
+            setConversationHistory(prev => [...prev, aiMessage]);
+            
+            // Speak the response
+            await speakText(data.response);
+            
+          } catch (error) {
+            console.error('❌ Error processing voice message:', error);
+            const errorMsg: ConversationMessage = { 
+              speaker: 'ai', 
+              text: "I'm having trouble processing that. Let me try again...", 
+              timestamp: new Date(), 
+              isFallback: true 
+            };
+            setConversationHistory(prev => [...prev, errorMsg]);
+            await speakText(errorMsg.text);
+          }
+        }
       }
+    };
 
+    recognition.onerror = (event: any) => {
+      console.error('Speech recognition error:', event.error);
+      setIsRecording(false);
+      
+      if (event.error === 'not-allowed') {
+        setErrorMessage('Microphone access denied. Please allow microphone permissions.');
+      } else if (event.error === 'audio-capture') {
+        setErrorMessage('No microphone found. Please check your microphone connection.');
+      } else if (event.error !== 'no-speech') {
+        setErrorMessage(`Speech recognition error: ${event.error}`);
+      }
+    };
+
+    recognition.onend = () => {
+      console.log('🎤 Speech recognition ended');
+      setIsRecording(false);
+      // Restart recognition if we're still in running state
+      if (interviewState === 'running') {
+        setTimeout(() => {
+          try {
+            recognition.start();
+          } catch (error) {
+            console.error('Failed to restart recognition:', error);
+          }
+        }, 500);
+      }
+    };
+
+    speechRecognitionRef.current = recognition;
+
+    try {
+      recognition.start();
     } catch (error) {
-      console.error('Error processing recording:', error);
-      setErrorMessage('Failed to process voice message. Please try again.');
-      
-      // Remove temporary message on error
-      setConversationHistory(prev => 
-        prev.filter(msg => msg.text !== '🎤 Converting speech to text...')
-      );
-      
-      const errorMsg: ConversationMessage = { 
-        speaker: 'ai', 
-        text: "I couldn't process that. Please try speaking again.", 
-        timestamp: new Date(), 
-        isFallback: true 
-      };
-      setConversationHistory(prev => [...prev, errorMsg]);
+      console.error('Failed to start speech recognition:', error);
+      setErrorMessage('Failed to start speech recognition. Please refresh and try again.');
+    }
+  };
+
+  const stopSpeechRecognition = () => {
+    if (speechRecognitionRef.current) {
+      speechRecognitionRef.current.stop();
+      setIsRecording(false);
     }
   };
 
   const toggleRecording = () => {
     if (isRecording) {
-      stopRecording();
+      stopSpeechRecognition();
     } else {
-      startRecording();
+      initializeSpeechRecognition();
     }
   };
 
@@ -461,9 +479,9 @@ export default function RecordingStoriesPage() {
   const getStatusText = () => {
     if (aiStatus === 'speaking') return 'AI is speaking...';
     if (aiStatus === 'thinking') return 'Processing...';
-    if (isRecording) return `Recording • ${recordingDuration}s`;
+    if (isRecording) return `Listening • ${recordingDuration}s`;
     if (errorMessage) return 'Error occurred';
-    return 'Ready to record';
+    return 'Ready to listen';
   };
 
   const formatDuration = (seconds: number) => {
@@ -612,9 +630,15 @@ export default function RecordingStoriesPage() {
               </div>
               <h2 className="text-3xl font-bold text-slate-800 mb-4">Share Your Story</h2>
               <p className="text-slate-600 text-lg max-w-md mx-auto leading-relaxed">
-                Start a conversation and watch as your stories are automatically transformed 
+                Start speaking and watch as your stories are automatically transformed 
                 into beautifully written blog posts using AI.
               </p>
+              <div className="mt-6 p-4 bg-blue-50 rounded-lg max-w-md mx-auto">
+                <p className="text-sm text-blue-700 flex items-center gap-2">
+                  <Mic size={16} />
+                  Click the microphone button and start speaking. Your words will be converted to a blog automatically.
+                </p>
+              </div>
             </div>
           )}
           

@@ -1,38 +1,6 @@
 const express = require('express');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const multer = require('multer');
-const fs = require('fs');
-const path = require('path');
 const router = express.Router();
-
-// Configure multer for audio file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = 'uploads/audio';
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, 'audio-' + uniqueSuffix + '.webm');
-  }
-});
-
-const upload = multer({ 
-  storage: storage,
-  limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB limit
-  },
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('audio/')) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only audio files are allowed!'), false);
-    }
-  }
-});
 
 // Attempt to load the Story model for database interactions
 let Story;
@@ -53,7 +21,7 @@ const genAI = isApiKeyAvailable ? new GoogleGenerativeAI(process.env.GEMINI_API_
 
 // --- Core AI Persona ---
 const FRIENDLY_LISTENER_PROMPT = `
-You are an AI friend. Your goal is be a warm, empathetic, and attentive listener.
+You are an AI friend. Your goal is to be a warm, empathetic, and attentive listener.
 - Your tone is natural, casual, and encouraging.
 - Your responses must be very short. Use phrases like "I'm listening.", "Go on.", "That's interesting.", "Mm-hmm.", or "Tell me more."
 - NEVER ask structured questions. Your role is to listen and gently prompt the user to continue their train of thought.
@@ -80,13 +48,12 @@ router.post('/start-session', async (req, res) => {
       storytellerName,
       topic: topic || 'wisdom', 
       conversationHistory: [{ speaker: 'ai', text: greeting, timestamp: new Date() }],
-      audioRecordings: [],
       status: 'processing',
       interviewMode: interviewMode || 'voice',
       blogPost: '',
       blogTitle: '',
       blogTags: [],
-      autoBlogEnabled: true // Enable auto blog generation
+      autoBlogEnabled: true
     });
     await newStory.save();
     console.log(`✅ New listener session started for ${storytellerName}. ID: ${newStory._id}`);
@@ -129,12 +96,15 @@ router.post('/chat', async (req, res) => {
     if (storyId && Story) {
       await updateStory(storyId, message, friendlyResponse);
       
-      // Auto-generate blog after every 3 user messages
+      // Auto-generate blog after sufficient conversation
       const story = await Story.findById(storyId);
       const userMessages = story.conversationHistory.filter(msg => msg.speaker === 'user');
-      if (userMessages.length >= 3 && story.autoBlogEnabled && !story.blogPost) {
-        console.log('🔄 Auto-generating blog post after 3 user messages...');
-        await generateAndSaveBlogPost(storyId);
+      if (userMessages.length >= 2 && story.autoBlogEnabled && !story.blogPost) {
+        console.log('🔄 Auto-generating blog post after sufficient conversation...');
+        // Generate blog in background without blocking response
+        generateAndSaveBlogPost(storyId).catch(error => {
+          console.error('❌ Auto-blog generation failed:', error.message);
+        });
       }
     }
     
@@ -155,30 +125,22 @@ router.post('/chat', async (req, res) => {
   }
 });
 
-// Voice message processing with Gemini speech-to-text
-router.post('/voice-message', upload.single('audio'), async (req, res) => {
-  const { storyId, storytellerName } = req.body;
+// Direct voice message processing
+router.post('/voice-message', async (req, res) => {
+  const { storyId, storytellerName, message } = req.body;
   
-  console.log('🎤 Voice message received:', {
+  console.log('🎤 Voice message received (direct processing):', {
     storyId: storyId,
     storytellerName: storytellerName,
-    file: req.file ? req.file.filename : 'No file'
+    message: message
   });
 
-  if (!req.file) {
-    return res.status(400).json({ error: 'No audio file uploaded' });
+  if (!message) {
+    return res.status(400).json({ error: 'No message provided' });
   }
 
   try {
-    // Step 1: Convert speech to text using Gemini
-    const transcribedText = await convertSpeechToTextWithGemini(req.file.path);
-    console.log('📝 Transcribed text:', transcribedText);
-
-    if (!transcribedText || transcribedText.trim().length === 0) {
-      throw new Error('No speech detected in audio');
-    }
-
-    // Step 2: Get AI response
+    // Get AI response directly
     let conversationHistory = [];
     if (storyId && Story) {
       const story = await Story.findById(storyId);
@@ -187,46 +149,36 @@ router.post('/voice-message', upload.single('audio'), async (req, res) => {
       }
     }
 
-    const friendlyResponse = await generateAcknowledgement(transcribedText, conversationHistory, storytellerName);
+    const friendlyResponse = await generateAcknowledgement(message, conversationHistory, storytellerName);
 
-    // Step 3: Update database with both text and audio reference
+    // Update database
     if (storyId && Story) {
-      await updateStoryWithAudio(storyId, transcribedText, friendlyResponse, req.file.filename);
+      await updateStoryWithVoice(storyId, message, friendlyResponse);
       
       // Auto-generate blog after voice messages
       const story = await Story.findById(storyId);
       const userMessages = story.conversationHistory.filter(msg => msg.speaker === 'user');
       if (userMessages.length >= 2 && story.autoBlogEnabled && !story.blogPost) {
         console.log('🔄 Auto-generating blog post after voice message...');
-        await generateAndSaveBlogPost(storyId);
+        // Generate blog in background
+        generateAndSaveBlogPost(storyId).catch(error => {
+          console.error('❌ Auto-blog generation failed:', error.message);
+        });
       }
     }
 
-    // Step 4: Clean up audio file
-    fs.unlink(req.file.path, (err) => {
-      if (err) console.error('❌ Failed to delete audio file:', err);
-    });
-
     res.json({
       response: friendlyResponse,
-      transcribedText: transcribedText,
+      transcribedText: message,
       timestamp: new Date().toISOString(),
       storyId: storyId
     });
 
   } catch (error) {
     console.error('🔴 Error processing voice message:', error);
-    
-    // Clean up file on error
-    if (req.file && fs.existsSync(req.file.path)) {
-      fs.unlink(req.file.path, (err) => {
-        if (err) console.error('❌ Failed to delete audio file on error:', err);
-      });
-    }
-
     res.status(500).json({
       error: 'Failed to process voice message',
-      response: "I couldn't quite catch that. Could you please try again?",
+      response: "I couldn't process that. Could you please try again?",
       timestamp: new Date().toISOString(),
       isFallback: true
     });
@@ -323,7 +275,7 @@ async function updateStory(storyId, userMessage, aiResponse) {
   }
 }
 
-async function updateStoryWithAudio(storyId, userMessage, aiResponse, audioFilename) {
+async function updateStoryWithVoice(storyId, userMessage, aiResponse) {
   try {
     await Story.findByIdAndUpdate(storyId, { 
       $push: { 
@@ -333,84 +285,17 @@ async function updateStoryWithAudio(storyId, userMessage, aiResponse, audioFilen
               speaker: 'user', 
               text: userMessage, 
               timestamp: new Date(),
-              audioFile: audioFilename
+              isVoice: true
             },
             { speaker: 'ai', text: aiResponse, timestamp: new Date() }
           ]
-        },
-        audioRecordings: audioFilename
+        }
       }
     });
-    console.log(`✅ Updated story ${storyId} with voice message and audio reference`);
+    console.log(`✅ Updated story ${storyId} with voice conversation`);
   } catch (dbError) {
     console.error(`❌ Database update error for story ${storyId}:`, dbError);
   }
-}
-
-async function convertSpeechToTextWithGemini(audioFilePath) {
-  if (!isApiKeyAvailable) {
-    // Fallback to mock transcription
-    return await mockSpeechToText(audioFilePath);
-  }
-
-  try {
-    // Read audio file and convert to base64
-    const audioFile = fs.readFileSync(audioFilePath);
-    const base64Audio = audioFile.toString('base64');
-
-    const model = genAI.getGenerativeModel({ 
-      model: "gemini-1.5-pro-latest",
-      generationConfig: {
-        temperature: 0.1,
-        topP: 0.8,
-        topK: 40,
-      }
-    });
-
-    const prompt = `
-      Please transcribe the following audio file accurately. 
-      Return only the transcribed text without any additional commentary or formatting.
-      If the audio is unclear or contains background noise, do your best to transcribe what you hear.
-    `;
-
-    // Create the request with the audio file
-    const result = await model.generateContent([
-      prompt,
-      {
-        inlineData: {
-          mimeType: 'audio/webm',
-          data: base64Audio
-        }
-      }
-    ]);
-
-    const transcription = result.response.text().trim();
-    console.log('🎯 Gemini Transcription:', transcription);
-    return transcription;
-
-  } catch (error) {
-    console.error('🔴 Gemini speech-to-text error:', error);
-    // Fallback to mock transcription
-    return await mockSpeechToText(audioFilePath);
-  }
-}
-
-async function mockSpeechToText(audioFilePath) {
-  const mockResponses = [
-    "I was thinking about my childhood memories and how they shaped who I am today.",
-    "The other day I had this incredible experience that really changed my perspective on life.",
-    "I remember when I first discovered my passion for storytelling and how it transformed my career.",
-    "My family has always been my rock, and I want to share some stories about our journey together.",
-    "I've been reflecting on the importance of community and how it impacts our daily lives.",
-    "There's this beautiful place I visited recently that reminded me of the simple joys in life.",
-    "I learned some valuable lessons from my mentors that I think could help others too.",
-    "The journey of personal growth has been challenging but incredibly rewarding for me.",
-    "I want to talk about the power of resilience and how it helped me overcome obstacles.",
-    "Finding balance in life has been my biggest challenge and greatest achievement."
-  ];
-  
-  await new Promise(resolve => setTimeout(resolve, 800));
-  return mockResponses[Math.floor(Math.random() * mockResponses.length)];
 }
 
 async function generateAndSaveBlogPost(storyId) {
@@ -422,7 +307,10 @@ async function generateAndSaveBlogPost(storyId) {
     };
     
     if (Story) {
-      await Story.findByIdAndUpdate(storyId, blogData);
+      await Story.findByIdAndUpdate(storyId, {
+        ...blogData,
+        blogGeneratedAt: new Date()
+      });
     }
     
     return blogData;
@@ -439,12 +327,18 @@ async function generateAndSaveBlogPost(storyId) {
       .map(msg => msg.text)
       .join('\n\n');
 
+    if (!userMessages || userMessages.trim().length === 0) {
+      throw new Error('No user messages found to generate blog from');
+    }
+
+    // Use correct Gemini model names
     const model = genAI.getGenerativeModel({ 
-      model: "gemini-1.5-pro-latest",
+      model: "gemini-2.5-flash",
       generationConfig: {
         temperature: 0.7,
         topP: 0.8,
         topK: 40,
+        maxOutputTokens: 1024,
       }
     });
 
@@ -457,7 +351,7 @@ async function generateAndSaveBlogPost(storyId) {
 
       REQUIREMENTS:
       - Create a catchy, emotional title (max 60 characters)
-      - Write 500-800 words of engaging content
+      - Write 400-600 words of engaging content
       - Structure with clear paragraphs and natural flow
       - Capture the emotional journey and key insights
       - Make it personal and relatable
@@ -471,10 +365,14 @@ async function generateAndSaveBlogPost(storyId) {
       }
 
       Make the blog post inspiring, well-written, and suitable for a general audience.
+      Focus on the personal stories and emotional journey shared in the conversation.
     `;
 
+    console.log('🤖 Generating blog post with Gemini...');
     const result = await model.generateContent(prompt);
     const responseText = result.response.text().trim();
+    
+    console.log('📝 Raw blog generation response:', responseText);
     
     // Extract JSON from response
     const jsonMatch = responseText.match(/\{[\s\S]*\}/);
@@ -491,13 +389,15 @@ async function generateAndSaveBlogPost(storyId) {
         await Story.findByIdAndUpdate(storyId, {
           blogTitle: blogData.blogTitle,
           blogPost: blogData.blogContent,
-          blogTags: blogData.blogTags || []
+          blogTags: blogData.blogTags || [],
+          blogGeneratedAt: new Date()
         });
       }
 
       console.log('✅ Blog post generated and saved:', blogData.blogTitle);
       return blogData;
     } else {
+      console.error('❌ Could not extract JSON from response:', responseText);
       throw new Error('Invalid response format from AI');
     }
   } catch (error) {
@@ -506,12 +406,21 @@ async function generateAndSaveBlogPost(storyId) {
     // Fallback blog post
     const fallbackBlog = {
       blogTitle: "A Personal Journey of Discovery",
-      blogContent: `This blog post captures the personal stories and insights shared in a recent conversation. The speaker reflected on various life experiences, lessons learned, and moments that shaped their perspective. While the full depth of the conversation is preserved in our records, this blog serves as a testament to the power of personal storytelling and the wisdom that emerges when we take time to reflect on our journeys.`,
-      blogTags: ["personal-growth", "storytelling", "reflection"]
+      blogContent: `This blog post captures the personal stories and insights shared in a recent conversation. 
+
+The speaker reflected on various life experiences, lessons learned, and moments that shaped their perspective. Through heartfelt sharing, they revealed the journey of personal growth and the wisdom gained along the way.
+
+While the full depth of the conversation is preserved in our records, this blog serves as a testament to the power of personal storytelling and the profound insights that emerge when we take time to reflect on our life's journey.
+
+Every story shared becomes part of a larger narrative about human experience, connection, and the continuous process of learning and growing.`,
+      blogTags: ["personal-growth", "storytelling", "reflection", "life-journey"]
     };
 
     if (Story) {
-      await Story.findByIdAndUpdate(storyId, fallbackBlog);
+      await Story.findByIdAndUpdate(storyId, {
+        ...fallbackBlog,
+        blogGeneratedAt: new Date()
+      });
     }
 
     return fallbackBlog;
@@ -523,6 +432,7 @@ async function generateAcknowledgement(userMessage, history, storytellerName) {
     return "I'm listening... (Test Mode)";
   }
 
+  // Use correct model name
   const model = genAI.getGenerativeModel({ 
     model: "gemini-2.5-flash",
     generationConfig: {
@@ -559,6 +469,7 @@ async function generateFinalSummary(conversationHistory, storytellerName) {
     .map(msg => msg.text)
     .join('\n\n');
   
+  // Use correct model name
   const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
   
   const prompt = `
