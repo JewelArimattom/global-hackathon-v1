@@ -1,5 +1,17 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { BookOpen, Mic, User, Calendar, Heart, Clock, CheckCircle2, ArrowRight, Play, Pause, RotateCcw, Save } from 'lucide-react';
+
+// Types for our data
+interface Story {
+  _id?: string;
+  storytellerName: string;
+  topic: string;
+  recordingDuration: number;
+  transcript: string;
+  audioUrl?: string;
+  createdAt?: Date;
+  status: 'processing' | 'completed' | 'failed';
+}
 
 export default function RecordingStoriesPage() {
   const [step, setStep] = useState(1);
@@ -7,6 +19,13 @@ export default function RecordingStoriesPage() {
   const [recordingTime, setRecordingTime] = useState(0);
   const [storytellerName, setStorytellerName] = useState('');
   const [selectedTopic, setSelectedTopic] = useState('');
+  const [transcript, setTranscript] = useState('');
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [conversationHistory, setConversationHistory] = useState<Array<{speaker: 'user' | 'ai', text: string}>>([]);
+
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recognitionRef = useRef<any>(null);
 
   const topics = [
     { id: 'childhood', title: 'Childhood Memories', icon: '🎈', description: 'Early years and growing up' },
@@ -25,14 +44,235 @@ export default function RecordingStoriesPage() {
     "What advice would you give to your younger self?",
   ];
 
-  const formatTime = (seconds) => {
+  const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
+  // Initialize speech recognition
+  const initializeSpeechRecognition = () => {
+    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+      const SpeechRecognition = (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition;
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+
+      recognition.onresult = (event: any) => {
+        let interimTranscript = '';
+        let finalTranscript = '';
+
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalTranscript += transcript + ' ';
+            // Process final transcript with AI
+            processUserResponse(transcript);
+          } else {
+            interimTranscript += transcript;
+          }
+        }
+
+        setTranscript(prev => prev + finalTranscript + interimTranscript);
+      };
+
+      recognition.onerror = (event: any) => {
+        console.error('Speech recognition error:', event.error);
+      };
+
+      recognitionRef.current = recognition;
+    } else {
+      console.warn('Speech recognition not supported in this browser');
+    }
+  };
+
+  // AI response simulation
+  const generateAIResponse = async (userInput: string): Promise<string> => {
+    // In a real implementation, you would call your AI API here
+    // For now, we'll simulate AI responses based on the topic
+    
+    const topic = topics.find(t => t.id === selectedTopic);
+    const responses: { [key: string]: string[] } = {
+      childhood: [
+        "That's wonderful! What other memories do you have from your childhood?",
+        "I'd love to hear more about that. How did that experience shape who you are today?",
+        "That sounds like a precious memory. Can you tell me about your childhood home?"
+      ],
+      family: [
+        "Family stories are so important. What traditions did your family have?",
+        "That's beautiful. How has your family influenced your life?",
+        "Tell me more about your family relationships growing up."
+      ],
+      career: [
+        "Your career journey sounds fascinating. What was your biggest challenge?",
+        "That's impressive. What advice would you give someone starting in your field?",
+        "How did your career choices affect your personal life?"
+      ],
+      love: [
+        "Love stories are always special. How did you meet your partner?",
+        "That's romantic. What's the secret to your lasting relationship?",
+        "Tell me about your wedding day or a special moment in your relationship."
+      ],
+      wisdom: [
+        "That's very insightful. What other life lessons have you learned?",
+        "Your wisdom is valuable. How did you learn this lesson?",
+        "What would you tell your grandchildren about living a good life?"
+      ],
+      travel: [
+        "Adventures create the best stories! What was your most memorable trip?",
+        "That sounds amazing. How did traveling change your perspective?",
+        "Tell me about a place that felt like home away from home."
+      ]
+    };
+
+    const topicResponses = responses[selectedTopic] || [
+      "That's very interesting. Please tell me more.",
+      "I'd love to hear more about that experience.",
+      "How did that make you feel?"
+    ];
+
+    // Simulate API delay
+    await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000));
+    
+    return topicResponses[Math.floor(Math.random() * topicResponses.length)];
+  };
+
+  const processUserResponse = async (userInput: string) => {
+    // Add user message to conversation history
+    setConversationHistory(prev => [...prev, { speaker: 'user', text: userInput }]);
+
+    // Generate AI response
+    const aiResponse = await generateAIResponse(userInput);
+    
+    // Add AI response to conversation history
+    setConversationHistory(prev => [...prev, { speaker: 'ai', text: aiResponse }]);
+
+    // Speak the AI response (optional)
+    speakText(aiResponse);
+  };
+
+  const speakText = (text: string) => {
+    if ('speechSynthesis' in window) {
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 0.9;
+      utterance.pitch = 1;
+      window.speechSynthesis.speak(utterance);
+    }
+  };
+
+  const startRecording = async () => {
+    try {
+      // Request microphone access
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      
+      // Initialize media recorder
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        audioChunksRef.current.push(event.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
+        // Here you would upload the audio blob to your server
+        console.log('Audio recording completed:', audioBlob);
+      };
+
+      // Start recording
+      mediaRecorder.start();
+      setIsRecording(true);
+
+      // Initialize speech recognition
+      initializeSpeechRecognition();
+      if (recognitionRef.current) {
+        recognitionRef.current.start();
+      }
+
+      // Start with an AI greeting
+      const greeting = `Hello ${storytellerName}! I'm excited to hear your stories about ${topics.find(t => t.id === selectedTopic)?.title?.toLowerCase()}. ${sampleQuestions[0]}`;
+      setConversationHistory([{ speaker: 'ai', text: greeting }]);
+      speakText(greeting);
+
+    } catch (error) {
+      console.error('Error starting recording:', error);
+      alert('Error accessing microphone. Please ensure you have granted microphone permissions.');
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+    }
+    
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+    }
+    
+    setIsRecording(false);
+    if (window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+  };
+
+  const saveRecordingToMongoDB = async (): Promise<Story> => {
+    setIsProcessing(true);
+    
+    try {
+      // Prepare the story data
+      const storyData: Omit<Story, '_id' | 'createdAt'> = {
+        storytellerName,
+        topic: selectedTopic,
+        recordingDuration: recordingTime,
+        transcript,
+        status: 'processing',
+        audioUrl: undefined // In real implementation, you would upload the audio file
+      };
+
+      // Send to your backend API
+      const response = await fetch('/api/stories', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(storyData),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to save recording');
+      }
+
+      const savedStory: Story = await response.json();
+      
+      // Process the audio and transcript with AI (simulated)
+      setTimeout(() => {
+        // In real implementation, you would call your AI processing service
+        console.log('Processing story with AI...');
+      }, 2000);
+
+      return savedStory;
+    } catch (error) {
+      console.error('Error saving recording:', error);
+      throw error;
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleSaveAndContinue = async () => {
+    try {
+      await saveRecordingToMongoDB();
+      setStep(3);
+    } catch (error) {
+      alert('Error saving recording. Please try again.');
+    }
+  };
+
   React.useEffect(() => {
-    let interval;
+    let interval: NodeJS.Timeout;
     if (isRecording) {
       interval = setInterval(() => {
         setRecordingTime(prev => prev + 1);
@@ -172,6 +412,41 @@ export default function RecordingStoriesPage() {
                   </div>
                 </div>
 
+                {/* Conversation History */}
+                {conversationHistory.length > 0 && (
+                  <div className="mb-6 p-4 bg-gray-50 rounded-lg max-h-60 overflow-y-auto">
+                    {conversationHistory.map((message, index) => (
+                      <div
+                        key={index}
+                        className={`mb-3 ${
+                          message.speaker === 'ai' ? 'text-left' : 'text-right'
+                        }`}
+                      >
+                        <div
+                          className={`inline-block px-4 py-2 rounded-lg max-w-xs lg:max-w-md ${
+                            message.speaker === 'ai'
+                              ? 'bg-blue-100 text-gray-800'
+                              : 'bg-amber-100 text-gray-800'
+                          }`}
+                        >
+                          <div className="text-xs font-semibold mb-1">
+                            {message.speaker === 'ai' ? 'AI Guide' : storytellerName}
+                          </div>
+                          {message.text}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Live Transcript */}
+                {transcript && (
+                  <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg">
+                    <h4 className="font-semibold text-green-800 mb-2">Live Transcript:</h4>
+                    <p className="text-green-700">{transcript}</p>
+                  </div>
+                )}
+
                 {/* Recording Controls */}
                 <div className="flex flex-col items-center gap-6">
                   <div className="relative">
@@ -193,7 +468,7 @@ export default function RecordingStoriesPage() {
                   <div className="flex gap-4">
                     {!isRecording ? (
                       <button
-                        onClick={() => setIsRecording(true)}
+                        onClick={startRecording}
                         className="bg-amber-600 text-white px-8 py-4 rounded-lg hover:bg-amber-700 transition font-semibold flex items-center gap-2"
                       >
                         <Play className="w-5 h-5" /> Start Recording
@@ -201,15 +476,17 @@ export default function RecordingStoriesPage() {
                     ) : (
                       <>
                         <button
-                          onClick={() => setIsRecording(false)}
+                          onClick={stopRecording}
                           className="bg-gray-600 text-white px-8 py-4 rounded-lg hover:bg-gray-700 transition font-semibold flex items-center gap-2"
                         >
-                          <Pause className="w-5 h-5" /> Pause
+                          <Pause className="w-5 h-5" /> Stop
                         </button>
                         <button
                           onClick={() => {
-                            setIsRecording(false);
+                            stopRecording();
                             setRecordingTime(0);
+                            setTranscript('');
+                            setConversationHistory([]);
                           }}
                           className="bg-white text-gray-700 px-8 py-4 rounded-lg hover:bg-gray-50 transition font-semibold border-2 border-gray-200 flex items-center gap-2"
                         >
@@ -247,11 +524,20 @@ export default function RecordingStoriesPage() {
                   Back
                 </button>
                 <button
-                  onClick={() => setStep(3)}
-                  disabled={recordingTime < 10}
+                  onClick={handleSaveAndContinue}
+                  disabled={recordingTime < 10 || isProcessing}
                   className="flex-1 bg-amber-600 text-white py-4 rounded-lg hover:bg-amber-700 transition font-semibold disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
-                  <Save className="w-5 h-5" /> Save & Continue
+                  {isProcessing ? (
+                    <>
+                      <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <Save className="w-5 h-5" /> Save & Continue
+                    </>
+                  )}
                 </button>
               </div>
             </div>
@@ -317,6 +603,8 @@ export default function RecordingStoriesPage() {
                     setStorytellerName('');
                     setSelectedTopic('');
                     setRecordingTime(0);
+                    setTranscript('');
+                    setConversationHistory([]);
                   }}
                   className="flex-1 bg-white text-gray-700 py-4 rounded-lg hover:bg-gray-50 transition font-semibold border-2 border-gray-200"
                 >
