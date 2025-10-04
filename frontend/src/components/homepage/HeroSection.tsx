@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { BookOpen, Heart, Users, Sparkles, Menu, X, Mail, Phone, MapPin, Facebook, Twitter, Instagram, Linkedin } from 'lucide-react';
-
+import Link from 'next/link';
 export default function HeroSection() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -12,7 +12,7 @@ export default function HeroSection() {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <BookOpen className="w-8 h-8 text-amber-600" />
-              <span className="text-2xl font-semibold text-gray-800">Memory Keeper</span>
+              <Link href="/"><span className="text-2xl font-semibold text-gray-800">Memory Keeper</span></Link>
             </div>
             
             {/* Desktop Navigation */}
@@ -89,9 +89,9 @@ export default function HeroSection() {
 
             {/* CTA Buttons */}
             <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-16">
-              <button className="bg-amber-600 text-white px-8 py-4 rounded-lg hover:bg-amber-700 transition font-semibold text-lg shadow-lg hover:shadow-xl w-full sm:w-auto">
+              <Link href="/stories"><button className="bg-amber-600 text-white px-8 py-4 rounded-lg hover:bg-amber-700 transition font-semibold text-lg shadow-lg hover:shadow-xl w-full sm:w-auto">
                 Start Recording Stories
-              </button>
+              </button></Link>
               <button className="bg-white text-gray-700 px-8 py-4 rounded-lg hover:bg-gray-50 transition font-semibold text-lg border-2 border-gray-200 w-full sm:w-auto">
                 Watch Demo
               </button>

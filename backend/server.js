@@ -1,7 +1,7 @@
 const express = require('express');
 const dotenv = require('dotenv');
 const path = require('path');
-const connectDB = require('./database'); 
+const connectDB = require('./database');
 const corsMiddleware = require('./middleware/cors');
 
 // Load env vars
@@ -21,16 +21,18 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // Serve static files from uploads directory
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Routes
+// --- ROUTES ---
 app.use('/api/stories', require('./routes/stories'));
+app.use('/api/vapi', require('./routes/vapi')); // For Phone Interviews
+app.use('/api/ai', require('./routes/ai'));     // For Voice Interviews
 
 // Health check route
 app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'OK', 
+  res.json({
+    status: 'OK',
     message: 'Memory Keeper API is running',
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV 
+    environment: process.env.NODE_ENV
   });
 });
 
@@ -41,6 +43,8 @@ app.get('/', (req, res) => {
     version: '1.0.0',
     endpoints: {
       stories: '/api/stories',
+      vapi: '/api/vapi',
+      ai: '/api/ai',
       health: '/api/health'
     }
   });
@@ -54,14 +58,14 @@ app.use('*', (req, res) => {
 // Global error handler
 app.use((error, req, res, next) => {
   console.error('Global error handler:', error);
-  
+
   if (error.name === 'MulterError') {
     if (error.code === 'LIMIT_FILE_SIZE') {
       return res.status(400).json({ error: 'File too large' });
     }
   }
-  
-  res.status(500).json({ 
+
+  res.status(500).json({
     error: 'Something went wrong!',
     ...(process.env.NODE_ENV === 'development' && { stack: error.stack })
   });
