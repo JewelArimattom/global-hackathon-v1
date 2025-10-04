@@ -218,49 +218,40 @@ export default function RecordingStoriesPage() {
     }
   };
 
-  const saveRecordingToMongoDB = async (): Promise<Story> => {
-    setIsProcessing(true);
-    
-    try {
-      // Prepare the story data
-      const storyData: Omit<Story, '_id' | 'createdAt'> = {
-        storytellerName,
-        topic: selectedTopic,
-        recordingDuration: recordingTime,
-        transcript,
-        status: 'processing',
-        audioUrl: undefined // In real implementation, you would upload the audio file
-      };
+ // Replace the saveRecordingToMongoDB function in your frontend
+const saveRecordingToMongoDB = async (): Promise<Story> => {
+  setIsProcessing(true);
+  
+  try {
+    const formData = new FormData();
+    formData.append('storytellerName', storytellerName);
+    formData.append('topic', selectedTopic);
+    formData.append('recordingDuration', recordingTime.toString());
+    formData.append('transcript', transcript);
+    formData.append('conversationHistory', JSON.stringify(conversationHistory));
 
-      // Send to your backend API
-      const response = await fetch('/api/stories', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(storyData),
-      });
+    // If you have audio data, append it
+    // formData.append('audio', audioBlob, 'recording.wav');
 
-      if (!response.ok) {
-        throw new Error('Failed to save recording');
-      }
+    const response = await fetch('http://localhost:5000/api/stories', {
+      method: 'POST',
+      body: formData,
+    });
 
-      const savedStory: Story = await response.json();
-      
-      // Process the audio and transcript with AI (simulated)
-      setTimeout(() => {
-        // In real implementation, you would call your AI processing service
-        console.log('Processing story with AI...');
-      }, 2000);
-
-      return savedStory;
-    } catch (error) {
-      console.error('Error saving recording:', error);
-      throw error;
-    } finally {
-      setIsProcessing(false);
+    if (!response.ok) {
+      throw new Error('Failed to save recording');
     }
-  };
+
+    const result = await response.json();
+    return result.story;
+    
+  } catch (error) {
+    console.error('Error saving recording:', error);
+    throw error;
+  } finally {
+    setIsProcessing(false);
+  }
+};
 
   const handleSaveAndContinue = async () => {
     try {
