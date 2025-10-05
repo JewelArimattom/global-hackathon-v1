@@ -3,7 +3,7 @@ import RecordingStoriesPage from './pages/RecordingStoriesPage';
 import Home from "./components/homepage/Home";
 import LoginPage from './pages/LoginPage';
 import SignupPage from './pages/SignUpPage';
-import VapiPhoneInterview from './pages/VapiPhoneInterview';
+import BlogsPage from './pages/BlogsPage';
 const NotFound = () => <div className="p-8 text-center min-h-screen"><h1>404 - Page Not Found</h1></div>;
 
 const App = () => {
@@ -13,9 +13,9 @@ const App = () => {
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/stories" element={<RecordingStoriesPage />} />
+          <Route path="/blogs" element={<BlogsPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/signup" element={<SignupPage />} />
-          <Route path="/vapi" element={<VapiPhoneInterview />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </main>

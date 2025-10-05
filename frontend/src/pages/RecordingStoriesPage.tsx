@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { BookOpen, Mic, User, AlertTriangle, Wifi, Save, Loader2, MessageSquare, Play, Square, FileText, Sparkles } from 'lucide-react';
+import { BookOpen, Mic, User, AlertTriangle, Wifi, Save, Loader2, MessageSquare, Play, Square, FileText, Sparkles, Library, ExternalLink } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 
 // Types
 interface ConversationMessage {
@@ -19,15 +20,20 @@ interface AIResponse {
 }
 
 interface BlogData {
+  blogId?: string;
   blogTitle: string;
+  blogSubtitle?: string;
   blogContent: string;
   blogTags: string[];
+  blogCategory?: string;
+  slug?: string;
   success: boolean;
   message: string;
 }
 
 // --- Main Component ---
 export default function RecordingStoriesPage() {
+  const navigate = useNavigate();
   const [interviewState, setInterviewState] = useState<'ready' | 'running' | 'saving' | 'error'>('ready');
   const [isRecording, setIsRecording] = useState(false);
   const [conversationHistory, setConversationHistory] = useState<ConversationMessage[]>([]);
@@ -78,9 +84,14 @@ export default function RecordingStoriesPage() {
     checkBackendConnection();
   }, []);
 
+ // Inside RecordingStoriesPage.tsx
+
   const checkBackendConnection = async () => {
     try {
-      const response = await fetch('http://localhost:5000/api/ai/health');
+      // BEFORE: const response = await fetch('http://localhost:5000/api/ai/health');
+      // AFTER: Corrected the URL to match the server's route
+      const response = await fetch('http://localhost:5000/health');
+      
       setIsBackendConnected(response.ok);
     } catch {
       setIsBackendConnected(false);
@@ -144,7 +155,8 @@ export default function RecordingStoriesPage() {
         setShowBlogPreview(true);
       }
       
-      alert('Story saved successfully! ' + (data.blogGenerated ? 'Blog was generated.' : ''));
+      // Show success message
+      alert('Story saved successfully! ' + (data.blogGenerated ? 'Blog was generated and published.' : ''));
       
       // Reset state
       setInterviewState('ready');
@@ -152,7 +164,6 @@ export default function RecordingStoriesPage() {
       setCurrentStoryId(null);
       setRecordingDuration(0);
       setRecordingStartTime(null);
-      setBlogData(null);
     } catch (error) {
       setErrorMessage('Failed to save story. Please try again.');
     } finally {
@@ -168,7 +179,10 @@ export default function RecordingStoriesPage() {
       const response = await fetch('http://localhost:5000/api/ai/generate-blog', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ storyId: currentStoryId }),
+        body: JSON.stringify({ 
+          storyId: currentStoryId,
+          quality: 'standard' // or 'premium' for longer blogs
+        }),
       });
       
       if (!response.ok) throw new Error('Failed to generate blog post');
@@ -379,6 +393,19 @@ export default function RecordingStoriesPage() {
     }
   };
 
+  const handleViewBlogs = () => {
+    navigate('/blogs');
+  };
+
+  const handleCloseBlogPreview = () => {
+    setShowBlogPreview(false);
+  };
+
+  const handleViewBlogInLibrary = () => {
+    setShowBlogPreview(false);
+    navigate('/blogs');
+  };
+
   // --- Render Functions ---
 
   const renderMessageBubble = (message: ConversationMessage, index: number) => {
@@ -433,10 +460,10 @@ export default function RecordingStoriesPage() {
                 <h2 className="text-2xl font-bold text-slate-800">Generated Blog Post</h2>
               </div>
               <button
-                onClick={() => setShowBlogPreview(false)}
-                className="text-slate-400 hover:text-slate-600 transition-colors"
+                onClick={handleCloseBlogPreview}
+                className="text-slate-400 hover:text-slate-600 transition-colors text-2xl leading-none"
               >
-                ✕
+                ×
               </button>
             </div>
             
@@ -444,6 +471,11 @@ export default function RecordingStoriesPage() {
               <h1 className="text-4xl font-bold text-slate-800 mb-4 leading-tight">
                 {blogData.blogTitle}
               </h1>
+              {blogData.blogSubtitle && (
+                <p className="text-xl text-slate-600 mb-4 font-medium">
+                  {blogData.blogSubtitle}
+                </p>
+              )}
               <div className="flex flex-wrap gap-2 mb-6">
                 {blogData.blogTags.map((tag, index) => (
                   <span 
@@ -457,18 +489,39 @@ export default function RecordingStoriesPage() {
             </div>
             
             <article className="prose prose-lg max-w-none">
-              {blogData.blogContent.split('\n\n').map((paragraph, index) => (
-                <p key={index} className="text-slate-700 leading-relaxed mb-4 text-lg">
-                  {paragraph}
-                </p>
-              ))}
+              {blogData.blogContent.split('\n\n').map((paragraph, index) => {
+                // Check if paragraph is a heading (starts with ##)
+                if (paragraph.startsWith('## ')) {
+                  return (
+                    <h2 key={index} className="text-2xl font-bold text-slate-800 mt-8 mb-4">
+                      {paragraph.replace('## ', '')}
+                    </h2>
+                  );
+                }
+                return (
+                  <p key={index} className="text-slate-700 leading-relaxed mb-4 text-lg">
+                    {paragraph}
+                  </p>
+                );
+              })}
             </article>
             
             <div className="mt-8 pt-6 border-t border-slate-200">
-              <p className="text-sm text-slate-500 flex items-center gap-2">
-                <Sparkles className="w-4 h-4" />
-                This blog post was automatically generated from your conversation using AI.
-              </p>
+              <div className="flex items-center justify-between">
+                <p className="text-sm text-slate-500 flex items-center gap-2">
+                  <Sparkles className="w-4 h-4" />
+                  This blog post was automatically generated from your conversation using AI.
+                </p>
+                
+                <button
+                  onClick={handleViewBlogInLibrary}
+                  className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-teal-600 to-blue-600 text-white rounded-lg hover:from-teal-700 hover:to-blue-700 transition-all font-semibold"
+                >
+                  <Library className="w-4 h-4" />
+                  View in Blog Library
+                  <ExternalLink className="w-4 h-4" />
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -604,6 +657,14 @@ export default function RecordingStoriesPage() {
             </div>
           </div>
           <div className="flex items-center gap-4">
+            <button
+              onClick={handleViewBlogs}
+              className="flex items-center gap-2 px-4 py-2 bg-white border-2 border-teal-600 text-teal-600 rounded-lg hover:bg-teal-50 transition-all font-semibold"
+            >
+              <Library className="w-4 h-4" />
+              View Blog Library
+            </button>
+            
             {currentStoryId && (
               <span className="text-xs text-slate-500 bg-slate-100 px-3 py-1 rounded-full border">
                 Session: {currentStoryId.slice(-8)}
@@ -629,7 +690,7 @@ export default function RecordingStoriesPage() {
                 <MessageSquare className="w-12 h-12 text-teal-600" />
               </div>
               <h2 className="text-3xl font-bold text-slate-800 mb-4">Share Your Story</h2>
-              <p className="text-slate-600 text-lg max-w-md mx-auto leading-relaxed">
+              <p className="text-slate-600 text-lg max-w-md mx-auto leading-relaxed mb-6">
                 Start speaking and watch as your stories are automatically transformed 
                 into beautifully written blog posts using AI.
               </p>
@@ -638,6 +699,14 @@ export default function RecordingStoriesPage() {
                   <Mic size={16} />
                   Click the microphone button and start speaking. Your words will be converted to a blog automatically.
                 </p>
+              </div>
+              <div className="mt-4">
+                <button
+                  onClick={handleViewBlogs}
+                  className="text-teal-600 hover:text-teal-700 text-sm font-medium underline"
+                >
+                  Or browse existing blogs →
+                </button>
               </div>
             </div>
           )}

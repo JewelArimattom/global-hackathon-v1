@@ -1,87 +1,74 @@
 const express = require('express');
-const dotenv = require('dotenv');
-const path = require('path');
-const connectDB = require('./database');
-const cors = require('cors'); // Import the cors package
-
-// Load env vars
-dotenv.config();
-
-// Connect to database
-connectDB();
+const mongoose = require('mongoose');
+const cors = require('cors');
+require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 5000;
 
 // Middleware
-app.use(cors()); // Use the cors middleware
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// Serve static files from uploads directory
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// Database Connection
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/story-weaver', {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+})
+.then(() => console.log('✅ MongoDB Connected Successfully'))
+.catch((err) => console.error('❌ MongoDB Connection Error:', err));
 
-// --- ROUTES ---
-app.use('/api/stories', require('./routes/stories'));
-app.use('/api/vapi', require('./routes/vapi')); // For Phone Interviews
-app.use('/api/ai', require('./routes/ai'));     // For Voice Interviews
+// Routes
+const aiRoutes = require('./routes/ai');
+const blogRoutes = require('./routes/blogs');
 
-// Health check route
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'OK',
-    message: 'Memory Keeper API is running',
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV
+app.use('/api/ai', aiRoutes);
+app.use('/api/blogs', blogRoutes);
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    message: 'Story Weaver API is running',
+    database: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected'
   });
 });
 
-// Root route
-app.get('/', (req, res) => {
-  res.json({
-    message: 'Welcome to Memory Keeper API',
-    version: '1.0.0',
-    endpoints: {
-      stories: '/api/stories',
-      vapi: '/api/vapi',
-      ai: '/api/ai',
-      health: '/api/health'
-    }
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('❌ Server Error:', err);
+  res.status(500).json({ 
+    error: 'Internal Server Error',
+    message: err.message 
   });
 });
 
 // 404 handler
-app.use('*', (req, res) => {
-  res.status(404).json({ error: 'Endpoint not found' });
-});
-
-// Global error handler
-app.use((error, req, res, next) => {
-  console.error('Global error handler:', error);
-
-  if (error.name === 'MulterError') {
-    if (error.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({ error: 'File too large' });
-    }
-  }
-
-  res.status(500).json({
-    error: 'Something went wrong!',
-    ...(process.env.NODE_ENV === 'development' && { stack: error.stack })
+app.use((req, res) => {
+  res.status(404).json({ 
+    error: 'Not Found',
+    message: 'The requested resource does not exist'
   });
 });
 
-// Create uploads directory if it doesn't exist
-const fs = require('fs');
-const uploadDir = path.join(__dirname, 'uploads/audio');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
+const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📚 Memory Keeper API is ready!`);
-  console.log(`🌐 Environment: ${process.env.NODE_ENV}`);
-  console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
+  console.log(`\n✅ Server is running on port ${PORT}`);
+  console.log(`🌐 API Base URL: http://localhost:${PORT}`);
+  console.log(`📝 AI Routes: http://localhost:${PORT}/api/ai`);
+  console.log(`📚 Blog Routes: http://localhost:${PORT}/api/blogs`);
+  console.log(`\n📋 Available Endpoints:`);
+  console.log(`   - POST /api/ai/start-session`);
+  console.log(`   - POST /api/ai/chat`);
+  console.log(`   - POST /api/ai/voice-message`);
+  console.log(`   - POST /api/ai/generate-blog`);
+  console.log(`   - POST /api/ai/end-session`);
+  console.log(`   - GET  /api/blogs`);
+  console.log(`   - GET  /api/blogs/featured`);
+  console.log(`   - GET  /api/blogs/slug/:slug`);
+  console.log(`   - GET  /api/blogs/category/:category`);
+  console.log(`   - GET  /api/blogs/tag/:tag`);
+  console.log(`   - GET  /api/blogs/stats/overview`);
+  console.log(`   - POST /api/blogs/:id/like\n`);
 });
-

@@ -2,13 +2,14 @@ const express = require('express');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const router = express.Router();
 
-// Attempt to load the Story model for database interactions
-let Story;
+// Attempt to load the Story and Blog models
+let Story, Blog;
 try {
   Story = require('../models/Story');
-  console.log('✅ Story model loaded successfully');
+  Blog = require('../models/Blog');
+  console.log('✅ Story and Blog models loaded successfully');
 } catch (error) {
-  console.error('❌ Failed to load Story model. Database operations will be disabled.');
+  console.error('❌ Failed to load models. Database operations will be disabled.');
 }
 
 // --- API Key and AI Initialization ---
@@ -26,6 +27,39 @@ You are an AI friend. Your goal is to be a warm, empathetic, and attentive liste
 - Your responses must be very short. Use phrases like "I'm listening.", "Go on.", "That's interesting.", "Mm-hmm.", or "Tell me more."
 - NEVER ask structured questions. Your role is to listen and gently prompt the user to continue their train of thought.
 - Make the user feel heard and comfortable sharing whatever is on their mind.
+`;
+
+// Enhanced blog generation prompt
+const ENHANCED_BLOG_PROMPT = `
+You are an expert storyteller and professional blog writer. Your task is to transform personal conversations into compelling, well-structured blog posts that capture the essence of human experience.
+
+WRITING STYLE:
+- Write in a warm, authentic, and engaging voice
+- Use vivid imagery and sensory details
+- Create emotional resonance with readers
+- Balance reflection with narrative storytelling
+- Include thoughtful transitions between ideas
+- Use varied sentence structures for rhythm
+
+STRUCTURE REQUIREMENTS:
+- Opening Hook: Start with a captivating opening that draws readers in
+- Body Sections: Organize content into 4-6 clear thematic sections
+- Personal Insights: Weave in reflections and lessons learned
+- Memorable Conclusion: End with a powerful takeaway or call to reflection
+
+CONTENT DEPTH:
+- Minimum 800 words, maximum 1500 words
+- Rich paragraphs with 4-6 sentences each
+- Include specific anecdotes and examples
+- Connect personal stories to universal themes
+- Add depth through introspection and analysis
+
+TONE AND VOICE:
+- Authentic and conversational, yet polished
+- Emotionally intelligent and empathetic
+- Inspirational without being preachy
+- Vulnerable yet hopeful
+- Relatable to a broad audience
 `;
 
 // --- API Endpoints ---
@@ -81,7 +115,6 @@ router.post('/chat', async (req, res) => {
   }
 
   try {
-    // Get the current story to build conversation history
     let conversationHistory = [];
     if (storyId && Story) {
       const story = await Story.findById(storyId);
@@ -96,13 +129,11 @@ router.post('/chat', async (req, res) => {
     if (storyId && Story) {
       await updateStory(storyId, message, friendlyResponse);
       
-      // Auto-generate blog after sufficient conversation
       const story = await Story.findById(storyId);
       const userMessages = story.conversationHistory.filter(msg => msg.speaker === 'user');
       if (userMessages.length >= 2 && story.autoBlogEnabled && !story.blogPost) {
-        console.log('🔄 Auto-generating blog post after sufficient conversation...');
-        // Generate blog in background without blocking response
-        generateAndSaveBlogPost(storyId).catch(error => {
+        console.log('📄 Auto-generating enhanced blog post...');
+        generateAndSaveEnhancedBlog(storyId).catch(error => {
           console.error('❌ Auto-blog generation failed:', error.message);
         });
       }
@@ -125,11 +156,10 @@ router.post('/chat', async (req, res) => {
   }
 });
 
-// Direct voice message processing
 router.post('/voice-message', async (req, res) => {
   const { storyId, storytellerName, message } = req.body;
   
-  console.log('🎤 Voice message received (direct processing):', {
+  console.log('🎤 Voice message received:', {
     storyId: storyId,
     storytellerName: storytellerName,
     message: message
@@ -140,7 +170,6 @@ router.post('/voice-message', async (req, res) => {
   }
 
   try {
-    // Get AI response directly
     let conversationHistory = [];
     if (storyId && Story) {
       const story = await Story.findById(storyId);
@@ -151,17 +180,14 @@ router.post('/voice-message', async (req, res) => {
 
     const friendlyResponse = await generateAcknowledgement(message, conversationHistory, storytellerName);
 
-    // Update database
     if (storyId && Story) {
       await updateStoryWithVoice(storyId, message, friendlyResponse);
       
-      // Auto-generate blog after voice messages
       const story = await Story.findById(storyId);
       const userMessages = story.conversationHistory.filter(msg => msg.speaker === 'user');
       if (userMessages.length >= 2 && story.autoBlogEnabled && !story.blogPost) {
-        console.log('🔄 Auto-generating blog post after voice message...');
-        // Generate blog in background
-        generateAndSaveBlogPost(storyId).catch(error => {
+        console.log('📄 Auto-generating enhanced blog post after voice...');
+        generateAndSaveEnhancedBlog(storyId).catch(error => {
           console.error('❌ Auto-blog generation failed:', error.message);
         });
       }
@@ -185,28 +211,28 @@ router.post('/voice-message', async (req, res) => {
   }
 });
 
-// Generate blog post from conversation
+// Enhanced blog generation endpoint
 router.post('/generate-blog', async (req, res) => {
-  const { storyId } = req.body;
+  const { storyId, quality = 'standard' } = req.body;
   
   if (!storyId || !Story) {
     return res.status(400).json({ error: 'Story ID is required' });
   }
 
   try {
-    const blogData = await generateAndSaveBlogPost(storyId);
+    const blogData = await generateAndSaveEnhancedBlog(storyId, quality);
     
     res.json({
       success: true,
       ...blogData,
-      message: 'Blog post generated successfully'
+      message: 'Enhanced blog post generated successfully'
     });
 
   } catch (error) {
     console.error('🔴 Error generating blog post:', error);
     res.status(500).json({
       error: 'Failed to generate blog post',
-      message: 'Could not generate blog post from conversation'
+      message: error.message || 'Could not generate blog post from conversation'
     });
   }
 });
@@ -217,18 +243,16 @@ router.post('/end-session', async (req, res) => {
     const story = await Story.findById(storyId);
     if (!story) return res.status(404).json({ error: 'Story not found' });
     
-    // Generate final summary
     const finalSummary = await generateFinalSummary(story.conversationHistory, story.storytellerName);
     story.summary = finalSummary;
     story.transcript = story.conversationHistory.map(msg => `${msg.speaker}: ${msg.text}`).join('\n');
     story.status = 'completed';
     story.recordingDuration = recordingDuration || 0;
     
-    // Auto-generate blog post if not already generated
     if (!story.blogPost && story.autoBlogEnabled) {
       try {
-        const blogData = await generateAndSaveBlogPost(storyId);
-        console.log('✅ Blog post generated automatically for story:', storyId);
+        const blogData = await generateAndSaveEnhancedBlog(storyId);
+        console.log('✅ Enhanced blog post generated automatically');
       } catch (blogError) {
         console.error('❌ Failed to generate blog post:', blogError);
       }
@@ -236,7 +260,7 @@ router.post('/end-session', async (req, res) => {
     
     await story.save();
     
-    console.log(`✅ Story session completed and saved for story ID: ${storyId}`);
+    console.log(`✅ Story session completed: ${storyId}`);
     res.json({
       message: 'Story session completed and saved!',
       storyId: story._id,
@@ -269,9 +293,9 @@ async function updateStory(storyId, userMessage, aiResponse) {
         }
       }
     });
-    console.log(`✅ Updated story ${storyId} with new messages`);
+    console.log(`✅ Updated story ${storyId}`);
   } catch (dbError) {
-    console.error(`❌ Database update error for story ${storyId}:`, dbError);
+    console.error(`❌ Database update error:`, dbError);
   }
 }
 
@@ -292,28 +316,15 @@ async function updateStoryWithVoice(storyId, userMessage, aiResponse) {
         }
       }
     });
-    console.log(`✅ Updated story ${storyId} with voice conversation`);
+    console.log(`✅ Updated story with voice`);
   } catch (dbError) {
-    console.error(`❌ Database update error for story ${storyId}:`, dbError);
+    console.error(`❌ Database update error:`, dbError);
   }
 }
 
-async function generateAndSaveBlogPost(storyId) {
+async function generateAndSaveEnhancedBlog(storyId, quality = 'standard') {
   if (!isApiKeyAvailable) {
-    const blogData = {
-      blogTitle: "A Personal Story Journey",
-      blogContent: "This is a sample blog post that would be generated from your conversation in production mode.",
-      blogTags: ["personal", "story", "journey"]
-    };
-    
-    if (Story) {
-      await Story.findByIdAndUpdate(storyId, {
-        ...blogData,
-        blogGeneratedAt: new Date()
-      });
-    }
-    
-    return blogData;
+    throw new Error('AI service not available');
   }
 
   try {
@@ -331,99 +342,130 @@ async function generateAndSaveBlogPost(storyId) {
       throw new Error('No user messages found to generate blog from');
     }
 
-    // Use correct Gemini model names
     const model = genAI.getGenerativeModel({ 
-      model: "gemini-2.5-flash",
+      model: "gemini-2.0-flash-exp",
       generationConfig: {
-        temperature: 0.7,
-        topP: 0.8,
+        temperature: 0.8,
+        topP: 0.9,
         topK: 40,
-        maxOutputTokens: 1024,
+        maxOutputTokens: 2048,
       }
     });
 
+    const wordCount = quality === 'premium' ? '1200-1500' : quality === 'basic' ? '600-800' : '800-1200';
+
     const prompt = `
-      Create a compelling, well-structured blog post based on the following personal conversation. 
-      The blog should capture the essence of the story while making it engaging for readers.
+      ${ENHANCED_BLOG_PROMPT}
 
       CONVERSATION CONTENT:
       ${userMessages}
 
-      REQUIREMENTS:
-      - Create a catchy, emotional title (max 60 characters)
-      - Write 400-600 words of engaging content
-      - Structure with clear paragraphs and natural flow
-      - Capture the emotional journey and key insights
-      - Make it personal and relatable
-      - Include 3-5 relevant tags
+      AUTHOR: ${story.storytellerName}
+      TOPIC: ${story.topic || 'Personal Journey'}
+      
+      TARGET LENGTH: ${wordCount} words
+      QUALITY LEVEL: ${quality}
 
-      FORMAT: Return ONLY valid JSON without any markdown or additional text:
+      Create a deeply engaging, professionally written blog post. Structure it with:
+      
+      1. CAPTIVATING TITLE (50-70 characters)
+      2. COMPELLING SUBTITLE (100-150 characters) 
+      3. OPENING HOOK (1-2 paragraphs that draw readers in immediately)
+      4. MAIN BODY (4-6 thematic sections with clear headings)
+         - Each section should be 150-250 words
+         - Include vivid details and emotional depth
+         - Connect personal experience to universal themes
+      5. POWERFUL CONCLUSION (2-3 paragraphs)
+         - Reflect on the journey
+         - Leave readers with inspiration or insight
+      6. METADATA (5-8 relevant tags, reading category)
+
+      FORMAT: Return ONLY valid JSON without markdown:
       {
-        "blogTitle": "The Title Here",
-        "blogContent": "Full blog post content here...",
-        "blogTags": ["tag1", "tag2", "tag3"]
+        "title": "The Main Title",
+        "subtitle": "An engaging subtitle that expands on the title",
+        "content": "Full blog post with clear section breaks using \\n\\n## Section Heading\\n\\nContent...",
+        "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"],
+        "category": "personal-story",
+        "excerpt": "A compelling 2-3 sentence preview"
       }
 
-      Make the blog post inspiring, well-written, and suitable for a general audience.
-      Focus on the personal stories and emotional journey shared in the conversation.
+      Make this blog post exceptional - something readers will want to share and remember.
+      Focus on authentic storytelling, emotional resonance, and universal human themes.
     `;
 
-    console.log('🤖 Generating blog post with Gemini...');
+    console.log('🤖 Generating enhanced blog post with Gemini 2.0...');
     const result = await model.generateContent(prompt);
     const responseText = result.response.text().trim();
     
-    console.log('📝 Raw blog generation response:', responseText);
+    console.log('📝 Raw blog generation response received');
     
     // Extract JSON from response
     const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const blogData = JSON.parse(jsonMatch[0]);
-      
-      // Validate and clean the data
-      if (!blogData.blogTitle || !blogData.blogContent) {
-        throw new Error('Invalid blog data generated');
-      }
-
-      // Save to database
-      if (Story) {
-        await Story.findByIdAndUpdate(storyId, {
-          blogTitle: blogData.blogTitle,
-          blogPost: blogData.blogContent,
-          blogTags: blogData.blogTags || [],
-          blogGeneratedAt: new Date()
-        });
-      }
-
-      console.log('✅ Blog post generated and saved:', blogData.blogTitle);
-      return blogData;
-    } else {
-      console.error('❌ Could not extract JSON from response:', responseText);
+    if (!jsonMatch) {
       throw new Error('Invalid response format from AI');
     }
-  } catch (error) {
-    console.error('🔴 Error generating blog post:', error);
+
+    const blogData = JSON.parse(jsonMatch[0]);
     
-    // Fallback blog post
-    const fallbackBlog = {
-      blogTitle: "A Personal Journey of Discovery",
-      blogContent: `This blog post captures the personal stories and insights shared in a recent conversation. 
-
-The speaker reflected on various life experiences, lessons learned, and moments that shaped their perspective. Through heartfelt sharing, they revealed the journey of personal growth and the wisdom gained along the way.
-
-While the full depth of the conversation is preserved in our records, this blog serves as a testament to the power of personal storytelling and the profound insights that emerge when we take time to reflect on our life's journey.
-
-Every story shared becomes part of a larger narrative about human experience, connection, and the continuous process of learning and growing.`,
-      blogTags: ["personal-growth", "storytelling", "reflection", "life-journey"]
-    };
-
-    if (Story) {
-      await Story.findByIdAndUpdate(storyId, {
-        ...fallbackBlog,
-        blogGeneratedAt: new Date()
-      });
+    // Validate blog data
+    if (!blogData.title || !blogData.content) {
+      throw new Error('Invalid blog data generated - missing required fields');
     }
 
-    return fallbackBlog;
+    // Save to Story model
+    await Story.findByIdAndUpdate(storyId, {
+      blogTitle: blogData.title,
+      blogPost: blogData.content,
+      blogTags: blogData.tags || [],
+      blogGeneratedAt: new Date()
+    });
+
+    // Save to Blog collection
+    if (Blog) {
+      const newBlog = new Blog({
+        storyId: story._id,
+        authorName: story.storytellerName,
+        title: blogData.title,
+        subtitle: blogData.subtitle || '',
+        content: blogData.content,
+        tags: blogData.tags || [],
+        category: blogData.category || 'personal-story',
+        excerpt: blogData.excerpt || blogData.content.substring(0, 300) + '...',
+        status: 'published',
+        generationMethod: 'enhanced',
+        generationQuality: quality,
+        publishedAt: new Date()
+      });
+
+      await newBlog.save();
+      console.log(`✅ Enhanced blog saved to collection: ${newBlog._id}`);
+      
+      return {
+        blogId: newBlog._id,
+        blogTitle: newBlog.title,
+        blogSubtitle: newBlog.subtitle,
+        blogContent: newBlog.content,
+        blogTags: newBlog.tags,
+        blogCategory: newBlog.category,
+        blogExcerpt: newBlog.excerpt,
+        slug: newBlog.slug,
+        readingTime: newBlog.readingTime
+      };
+    }
+
+    return {
+      blogTitle: blogData.title,
+      blogSubtitle: blogData.subtitle,
+      blogContent: blogData.content,
+      blogTags: blogData.tags,
+      blogCategory: blogData.category,
+      blogExcerpt: blogData.excerpt
+    };
+
+  } catch (error) {
+    console.error('🔴 Error generating enhanced blog:', error);
+    throw error;
   }
 }
 
@@ -432,9 +474,8 @@ async function generateAcknowledgement(userMessage, history, storytellerName) {
     return "I'm listening... (Test Mode)";
   }
 
-  // Use correct model name
   const model = genAI.getGenerativeModel({ 
-    model: "gemini-2.5-flash",
+    model: "gemini-2.0-flash-exp",
     generationConfig: {
       temperature: 0.7,
       topP: 0.8,
@@ -455,8 +496,7 @@ async function generateAcknowledgement(userMessage, history, storytellerName) {
     console.log('✅ AI Response:', response);
     return response;
   } catch(error) {
-    console.error(`--- 🔴 GEMINI ERROR ---`);
-    console.error("Failed to generate response:", error);
+    console.error(`🔴 GEMINI ERROR:`, error);
     return "I'm listening. Please continue...";
   }
 }
@@ -469,8 +509,7 @@ async function generateFinalSummary(conversationHistory, storytellerName) {
     .map(msg => msg.text)
     .join('\n\n');
   
-  // Use correct model name
-  const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
   
   const prompt = `
     Create a concise, warm summary of the main stories and insights shared by ${storytellerName}.
@@ -486,8 +525,7 @@ async function generateFinalSummary(conversationHistory, storytellerName) {
     const result = await model.generateContent(prompt);
     return result.response.text().trim();
   } catch(error) {
-    console.error(`--- 🔴 GEMINI ERROR ---`);
-    console.error("Failed to generate the final summary:", error);
+    console.error(`🔴 GEMINI ERROR:`, error);
     return `A summary could not be generated for this conversation with ${storytellerName}.`;
   }
 }
